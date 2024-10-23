@@ -265,12 +265,15 @@ def aggregate_results(results_data, ground_truth_A_list, ground_truth_D_list):
     # Lists to store correlations for each iteration
     A_correlations = []
     D_correlations = []
+    A_cor_std_errs = []
+    D_cor_std_errs = []
 
     for iteration in range(num_iterations):
         A_maes = []
         D_maes = []
         A_corrs = []
         D_corrs = []
+
 
         # Loop through the experiment replicates
         for key in sorted(results_data.keys()):
@@ -307,7 +310,12 @@ def aggregate_results(results_data, ground_truth_A_list, ground_truth_D_list):
         A_correlations.append(avg_A_corr)
         D_correlations.append(avg_D_corr)
 
-    return A_mean_maes, A_mae_std_errs, D_mean_maes, D_mae_std_errs, A_correlations, D_correlations
+        # Compute standard error
+        A_cor_std_errs.append(np.std(A_corrs) / np.sqrt(len(results_data.keys())))
+        D_cor_std_errs.append(np.std(D_corrs) / np.sqrt(len(results_data.keys())))
+
+
+    return A_mean_maes, A_mae_std_errs, D_mean_maes, D_mae_std_errs, A_correlations, D_correlations, A_cor_std_errs, D_cor_std_errs
 
 
 def compute_mae(estimated, ground_truth):
@@ -329,7 +337,7 @@ def calculate_correlation(estimated_matrix, ground_truth_matrix):
 def plot_mae_and_correlation_vs_iterations(results_data_version1, ground_truth_A1_list, ground_truth_GGT1_list,
                                            exp_title=None):
     # Aggregate the estimated A and GGT values from version 1
-    A_mean_maes_1, A_mae_std_errs_1, D_mean_maes_1, D_mae_std_errs_1, A_correlations_1, D_correlations_1 = aggregate_results(
+    A_mean_maes_1, A_mae_std_errs_1, D_mean_maes_1, D_mae_std_errs_1, A_correlations_1, D_correlations_1, A_cor_std_errs_1, D_cor_std_errs_1 = aggregate_results(
         results_data_version1,
         ground_truth_A1_list,
         ground_truth_GGT1_list)
@@ -346,6 +354,10 @@ def plot_mae_and_correlation_vs_iterations(results_data_version1, ground_truth_A
     plt.errorbar(iterations, D_mean_maes_1, yerr=D_mae_std_errs_1, label='MAE between estimated H and true H',
                  color='black',
                  linestyle=':', marker='o', markerfacecolor='none', markeredgecolor='black')
+    print('WOT MAE in A:', A_mean_maes_1[0], '+-', A_mae_std_errs_1[0])
+    print('APPEX MAE in A:', A_mean_maes_1[-1], '+-', A_mae_std_errs_1[-1])
+    print('WOT MAE in H:', D_mean_maes_1[0], '+-', D_mae_std_errs_1[0])
+    print('APPEX MAE in H:', D_mean_maes_1[-1], '+-', D_mae_std_errs_1[-1])
 
     # Customize the MAE plot
     plt.xlabel('Iteration')
@@ -367,6 +379,11 @@ def plot_mae_and_correlation_vs_iterations(results_data_version1, ground_truth_A
     plt.errorbar(iterations, D_correlations_1, label='Correlation between estimated H and true H', color='black',
                  linestyle=':', marker='o', markerfacecolor='none', markeredgecolor='black')
 
+
+    print('WOT correlation in A:', A_correlations_1[0], '+-',A_cor_std_errs_1[0])
+    print('APPEX correlation in A:', A_correlations_1[-1], '+-',A_cor_std_errs_1[-1])
+    print('WOT correlation in H:', D_correlations_1[0], '+-',D_cor_std_errs_1[0])
+    print('APPEX correlation in H:', D_correlations_1[-1], '+-',D_cor_std_errs_1[-1])
     # Customize the correlation plot
     plt.xlabel('Iteration')
     plt.ylabel('Correlation')
@@ -403,36 +420,6 @@ def retrieve_true_A_D(exp_number, version):
         G = np.array([[1, 2], [-1, -2]])
 
     return A, np.matmul(G, G.T)
-
-
-def plot_exp_results(exp_number, version=None, d=None, num_reps=10):
-    results_data_global = {}
-    ground_truth_A_list = []
-    ground_truth_D_list = []
-    for i in range(1, num_reps + 1):
-        if exp_number != "random":
-            filename = f'Results_experiment_{exp_number}/version-{version}_replicate-{i}.pkl'
-        else:
-            filename = f'Results_experiment_{exp_number}_{d}/replicate-{i}.pkl'
-        with open(filename, 'rb') as f:
-            results_data = pickle.load(f)
-        if exp_number == 'random':
-            ground_truth_A_list.append(results_data['true_A'])
-            ground_truth_D_list.append(results_data['true_D'])
-
-        results_data_global[i] = results_data
-
-    if exp_number != 'random':
-        ground_truth_A1, ground_truth_GGT1 = retrieve_true_A_D(exp_number, version)
-        ground_truth_A_list = [ground_truth_A1] * num_reps
-        ground_truth_D_list = [ground_truth_GGT1] * num_reps
-
-    if exp_number == 'random':
-        plot_mae_and_correlation_vs_iterations(results_data_global, ground_truth_A_list, ground_truth_D_list,
-                                               exp_title=f'random SDEs of dimension {d}')
-    else:
-        plot_mae_and_correlation_vs_iterations(results_data_global, ground_truth_A_list, ground_truth_D_list,
-                                               exp_title=f'SDE {version} from example {exp_number}')
 
 
 def compute_mse(estimated, ground_truth):
@@ -564,7 +551,8 @@ def interpret_causal_experiment(directory_path, edge_threshold=0.5, v_eps=1, sho
         print("Standard Error v-structure SHD APPEX:", v_std_error_shd_appex)
 
 
-def plot_exp_results(exp_number, version=None, d=None, num_reps=2, N=500, seed=0):
+def plot_exp_results(exp_number, version=None, d=None, num_reps=2, N=500, seed=1):
+    print('Dimension:', d)
     results_data_global = {}
     ground_truth_A_list = []
     ground_truth_D_list = []
@@ -572,7 +560,7 @@ def plot_exp_results(exp_number, version=None, d=None, num_reps=2, N=500, seed=0
         if exp_number != "random":
             filename = f'Results_experiment_{exp_number}_seed-{seed}/version-{version}_N-{N}_replicate-{i}.pkl'
         else:
-            filename = f'Results_experiment_{exp_number}_{d}/replicate-{i}.pkl'
+            filename = f'Results_experiment_{exp_number}_{d}_seed-{seed}/replicate-{i}_N-{N}.pkl'
         with open(filename, 'rb') as f:
             results_data = pickle.load(f)
         if exp_number == 'random':
@@ -594,9 +582,12 @@ def plot_exp_results(exp_number, version=None, d=None, num_reps=2, N=500, seed=0
                                                exp_title=f'SDE {version} from example {exp_number}')
 
 
-# plot_exp_results(exp_number='random', d=50, num_reps=10)
+# ds = [3,4,5]
+# for d in ds:
+#     plot_exp_results(exp_number='random', d=d, num_reps=10)
 # plot_exp_results(exp_number = 1, version = 1, num_reps=2, seed=1)
 # plot_exp_results(exp_number = 2, version = 2, num_reps=10)
+
 
 ds = [5,10]
 ps = [0.5]
