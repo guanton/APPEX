@@ -186,7 +186,7 @@ def run_generic_experiment_replicates(exp_number, num_replicates, N_list=None, v
             N = 500
         print(f'\nRunning experiments for N={N}')
         for i in range(1, num_replicates + 1):
-            print(f'\nRunning replicate {i} of experiment {exp_number} with N={N}')
+            print(f'\nRunning replicate {i} of experiment {exp_number} with d={d} and N={N}')
             if exp_number == 1:
                 results_data = run_experiment_1(version=version, N=N)
             elif exp_number == 2:
@@ -207,7 +207,7 @@ def run_generic_experiment_replicates(exp_number, num_replicates, N_list=None, v
                     else:
                         results_dir = f'Results_experiment_latent_confounder_random_{d}_sparsity_{p}_seed-{seed}'
                 else:
-                    results_dir = f'Results_experiment_random_{d}_sparsity_{p}_seed-{seed}'
+                    results_dir = f'Results_experiment_random_{d}_seed-{seed}'
                 filename = f'replicate-{i}_N-{N}.pkl'
             os.makedirs(results_dir, exist_ok=True)
             filepath = os.path.join(results_dir, filename)
@@ -217,15 +217,18 @@ def run_generic_experiment_replicates(exp_number, num_replicates, N_list=None, v
 # run_generic_experiment_replicates(exp_number=2, version=2, num_replicates=10)
 # Define the list of N values you want to test
 N_list = [500]
-d_list = [10, 5, 3]
-p_list = [0.5, 0.25, 0.1]
+d_list = [5,10]
+p_list = [0.25]
+
+run_generic_experiment_replicates(exp_number='random', causal_experiment=True, causal_sufficiency=True, d=3,
+                                          num_replicates=2, N_list=N_list, p=0.1, seed =0)
 
 for p in p_list:
     for d in d_list:
-        run_generic_experiment_replicates(exp_number='random', causal_experiment=True, causal_sufficiency=True, d=d,
-                                          num_replicates=10, N_list=N_list, p=p, seed =1)
-        if p != 0.25 and d != 3:
-            run_generic_experiment_replicates(exp_number='random', causal_experiment=True, causal_sufficiency=False, d=d,
+        # run_generic_experiment_replicates(exp_number='random', causal_experiment=True, causal_sufficiency=True, d=d,
+        #                                   num_replicates=10, N_list=N_list, p=p, seed =1)
+        # if p != 0.25 and d != 3:
+        run_generic_experiment_replicates(exp_number='random', causal_experiment=True, causal_sufficiency=False, d=d,
                                           num_replicates=10, N_list=N_list, p=p, seed=1)
 
 # run_generic_experiment_replicates(exp_number='random', d=10, num_replicates=10, seed=1)
@@ -234,7 +237,7 @@ for p in p_list:
 # run_generic_experiment_replicates(exp_number=2, version=1, num_replicates=10)
 
 
-
+d_list = [3, 10, 9, 8]
 for d in d_list:
     run_generic_experiment_replicates(exp_number='random', causal_experiment=False, d=d,
                                       num_replicates=10, N_list=N_list, seed =1)
