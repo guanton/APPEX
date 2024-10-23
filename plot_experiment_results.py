@@ -76,140 +76,138 @@ def plot_causal_graphs(true_A, est_A_0, est_A_30, true_H, est_H_0, est_H_30, edg
         print("V-structure Structural Hamming Distance (SHD) between True Graph and Estimated Graph by APPEX:",
               v_shd_appex)
 
-
-    if latent:
-        graphs = [
-            (true_A, true_H, "True Causal Graph"),
-            (est_A_0, est_H_0, "Estimated Causal Graph by WOT"),
-            (est_A_30, est_H_30, "Estimated Causal Graph by APPEX")
-        ]
-    
-        # Initialize graphs for each scenario
-        plot_graphs = [nx.DiGraph() for _ in range(3)]
-        # Define layout positions
-        main_nodes = range(1, d + 1)
-        pos = nx.circular_layout(list(main_nodes))
-
-    
-        # Adjust positions for exogenous variables by extending the layout
-        def get_exogenous_position(pos, node, offset=0.3):
-            x1, y1 = pos[node[0]]
-            x2, y2 = pos[node[1]]
-    
-            # Midpoint between (x1, y1) and (x2, y2)
-            mid_x = (x1 + x2) / 2
-            mid_y = (y1 + y2) / 2
-    
-            # Calculate direction vector (x2 - x1, y2 - y1) and normalize it
-            dx, dy = x2 - x1, y2 - y1
-            length = np.sqrt(dx ** 2 + dy ** 2)
-            dir_x, dir_y = dx / length, dy / length
-    
-            # Offset the midpoint slightly away from the centerline for clarity
-            new_x = mid_x + dir_y * offset
-            new_y = mid_y - dir_x * offset
-    
-            return (new_x, new_y)
-    
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-    
-        # Store min and max coordinates for axis limit adjustments
-        all_x_values, all_y_values = [], []
-    
-        for idx, (A, H, title) in enumerate(graphs):
-            graph = plot_graphs[idx]
-            graph.add_nodes_from(main_nodes)
-    
-            # Plot A matrix connections
-            for i in range(d):
-                for j in range(d):
-                    if abs(A[j, i]) > edge_threshold:
-                        color = 'red' if A[j, i] < 0 else 'green'
-                        # Check if there is already an edge between (i+1, j+1) or (j+1, i+1)
-                        if graph.has_edge(i + 1, j + 1) or graph.has_edge(j + 1, i + 1):
-                            curved = True  # Apply curvature for parallel edges
-                        else:
-                            curved = abs(A[i, j]) > edge_threshold
-                        graph.add_edge(i + 1, j + 1, color=color, curved=curved, style='solid')
-    
-            # Plot H matrix exogenous variable connections
-            for i in range(d):
-                for j in range(i + 1, d):  # Only check upper triangular since H is symmetric
-                    if abs(H[i, j]) >= 0.5:
-                        exog_node = f'U_{i + 1}{j + 1}'
-                        graph.add_node(exog_node)
-                        pos[exog_node] = get_exogenous_position(pos, (i + 1, j + 1))
-                        # Assign dashed, black edges only for exogenous connections
-                        graph.add_edge(exog_node, i + 1, color='black', style='dotted')
-                        graph.add_edge(exog_node, j + 1, color='black', style='dotted')
-    
-            # Collect coordinates for axis limits
-            x_values, y_values = zip(*pos.values())
-            all_x_values.extend(x_values)
-            all_y_values.extend(y_values)
-    
-            # Plot the graph
-            plot_single_graph(graph, pos, title, axes[idx])
-    
-        # Determine global axis limits
-        xmin, xmax = min(all_x_values) - 0.5, max(all_x_values) + 0.5
-        ymin, ymax = min(all_y_values) - 0.5, max(all_y_values) + 0.5
-    
-        for ax in axes:
-            ax.set_xlim(xmin, xmax)
-            ax.set_ylim(ymin, ymax)
-    
-        plt.tight_layout()
-    else:
-        d = true_A.shape[0]
-        true_graph = nx.DiGraph()
-        est_graph_0 = nx.DiGraph()
-        est_graph_30 = nx.DiGraph()
-
-        # Add nodes (starting from 1 instead of 0)
-        nodes = range(1, d + 1)
-        true_graph.add_nodes_from(nodes)
-        est_graph_0.add_nodes_from(nodes)
-        est_graph_30.add_nodes_from(nodes)
-
-        # Add edges with color coding and curvature for bidirectional connections
-        graphs = [(true_A, true_graph), (est_A_0, est_graph_0), (est_A_30, est_graph_30)]
-        for A, graph in graphs:
-            for i in range(d):
-                for j in range(d):
-                    if abs(A[j, i]) > edge_threshold:
-                        color = 'red' if A[j, i] < 0 else 'green'
-                        # Check if it's a self-loop
-                        if i == j:
-                            graph.add_edge(i + 1, i + 1, color=color, curved=True)  # No curvature needed for self-loops
-                        else:
-                            if abs(A[i, j]) > edge_threshold:
-                                graph.add_edge(i + 1, j + 1, color=color, curved=True)
-                            else:
-                                graph.add_edge(i + 1, j + 1, color=color, curved=False)
-
-        # Set up the figure
-        fig, axes = plt.subplots(1, 3, figsize=(18, 6))
-        pos = nx.circular_layout(true_graph)
-
-        plot_single_graph(true_graph, pos, 'True Causal Graph', axes[0])
-        plot_single_graph(est_graph_0, pos, 'Estimated Causal Graph by WOT', axes[1])
-        plot_single_graph(est_graph_30, pos, 'Estimated Causal Graph by APPEX', axes[2])
-
-        # Dynamic axis limits
-        x_values, y_values = zip(*pos.values())
-        xmin, xmax = min(x_values) - 0.5, max(x_values) + 0.5
-        ymin, ymax = min(y_values) - 0.5, max(y_values) + 0.5
-        for ax in axes:
-            ax.set_xlim(xmin, xmax)
-            ax.set_ylim(ymin, ymax)
-
-        plt.tight_layout()
-
     if display_plot:
-        plt.show()
-    return shd_wot, shd_appex, v_shd_wot, v_shd_appex
+        if latent:
+            graphs = [
+                (true_A, true_H, "True Causal Graph"),
+                (est_A_0, est_H_0, "Estimated Causal Graph by WOT"),
+                (est_A_30, est_H_30, "Estimated Causal Graph by APPEX")
+            ]
 
+            # Initialize graphs for each scenario
+            plot_graphs = [nx.DiGraph() for _ in range(3)]
+            # Define layout positions
+            main_nodes = range(1, d + 1)
+            pos = nx.circular_layout(list(main_nodes))
+
+
+            # Adjust positions for exogenous variables by extending the layout
+            def get_exogenous_position(pos, node, offset=0.3):
+                x1, y1 = pos[node[0]]
+                x2, y2 = pos[node[1]]
+
+                # Midpoint between (x1, y1) and (x2, y2)
+                mid_x = (x1 + x2) / 2
+                mid_y = (y1 + y2) / 2
+
+                # Calculate direction vector (x2 - x1, y2 - y1) and normalize it
+                dx, dy = x2 - x1, y2 - y1
+                length = np.sqrt(dx ** 2 + dy ** 2)
+                dir_x, dir_y = dx / length, dy / length
+
+                # Offset the midpoint slightly away from the centerline for clarity
+                new_x = mid_x + dir_y * offset
+                new_y = mid_y - dir_x * offset
+
+                return (new_x, new_y)
+
+            fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+            # Store min and max coordinates for axis limit adjustments
+            all_x_values, all_y_values = [], []
+
+            for idx, (A, H, title) in enumerate(graphs):
+                graph = plot_graphs[idx]
+                graph.add_nodes_from(main_nodes)
+
+                # Plot A matrix connections
+                for i in range(d):
+                    for j in range(d):
+                        if abs(A[j, i]) > edge_threshold:
+                            color = 'red' if A[j, i] < 0 else 'green'
+                            # Check if there is already an edge between (i+1, j+1) or (j+1, i+1)
+                            if graph.has_edge(i + 1, j + 1) or graph.has_edge(j + 1, i + 1):
+                                curved = True  # Apply curvature for parallel edges
+                            else:
+                                curved = abs(A[i, j]) > edge_threshold
+                            graph.add_edge(i + 1, j + 1, color=color, curved=curved, style='solid')
+
+                # Plot H matrix exogenous variable connections
+                for i in range(d):
+                    for j in range(i + 1, d):  # Only check upper triangular since H is symmetric
+                        if abs(H[i, j]) >= 0.5:
+                            exog_node = f'U_{i + 1}{j + 1}'
+                            graph.add_node(exog_node)
+                            pos[exog_node] = get_exogenous_position(pos, (i + 1, j + 1))
+                            # Assign dashed, black edges only for exogenous connections
+                            graph.add_edge(exog_node, i + 1, color='black', style='dotted')
+                            graph.add_edge(exog_node, j + 1, color='black', style='dotted')
+
+                # Collect coordinates for axis limits
+                x_values, y_values = zip(*pos.values())
+                all_x_values.extend(x_values)
+                all_y_values.extend(y_values)
+
+                # Plot the graph
+                plot_single_graph(graph, pos, title, axes[idx])
+
+            # Determine global axis limits
+            xmin, xmax = min(all_x_values) - 0.5, max(all_x_values) + 0.5
+            ymin, ymax = min(all_y_values) - 0.5, max(all_y_values) + 0.5
+
+            for ax in axes:
+                ax.set_xlim(xmin, xmax)
+                ax.set_ylim(ymin, ymax)
+
+            plt.tight_layout()
+            plt.show()
+        else:
+            d = true_A.shape[0]
+            true_graph = nx.DiGraph()
+            est_graph_0 = nx.DiGraph()
+            est_graph_30 = nx.DiGraph()
+
+            # Add nodes (starting from 1 instead of 0)
+            nodes = range(1, d + 1)
+            true_graph.add_nodes_from(nodes)
+            est_graph_0.add_nodes_from(nodes)
+            est_graph_30.add_nodes_from(nodes)
+
+            # Add edges with color coding and curvature for bidirectional connections
+            graphs = [(true_A, true_graph), (est_A_0, est_graph_0), (est_A_30, est_graph_30)]
+            for A, graph in graphs:
+                for i in range(d):
+                    for j in range(d):
+                        if abs(A[j, i]) > edge_threshold:
+                            color = 'red' if A[j, i] < 0 else 'green'
+                            # Check if it's a self-loop
+                            if i == j:
+                                graph.add_edge(i + 1, i + 1, color=color, curved=True)  # No curvature needed for self-loops
+                            else:
+                                if abs(A[i, j]) > edge_threshold:
+                                    graph.add_edge(i + 1, j + 1, color=color, curved=True)
+                                else:
+                                    graph.add_edge(i + 1, j + 1, color=color, curved=False)
+
+            # Set up the figure
+            fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+            pos = nx.circular_layout(true_graph)
+
+            plot_single_graph(true_graph, pos, 'True Causal Graph', axes[0])
+            plot_single_graph(est_graph_0, pos, 'Estimated Causal Graph by WOT', axes[1])
+            plot_single_graph(est_graph_30, pos, 'Estimated Causal Graph by APPEX', axes[2])
+
+            # Dynamic axis limits
+            x_values, y_values = zip(*pos.values())
+            xmin, xmax = min(x_values) - 0.5, max(x_values) + 0.5
+            ymin, ymax = min(y_values) - 0.5, max(y_values) + 0.5
+            for ax in axes:
+                ax.set_xlim(xmin, xmax)
+                ax.set_ylim(ymin, ymax)
+
+            plt.tight_layout()
+            plt.show()
+    return shd_wot, shd_appex, v_shd_wot, v_shd_appex
 def plot_single_graph(graph, pos, title, ax):
     # Separate edges by type (straight, curved, solid, and dotted)
     straight_edges = [(u, v) for u, v, curved in graph.edges(data='curved') if not curved]
@@ -218,35 +216,39 @@ def plot_single_graph(graph, pos, title, ax):
     solid_edges = [(u, v) for u, v, style in graph.edges(data='style') if style == 'solid']
 
     # Combine edge types and assign their respective colors
-    edge_colors_straight = [graph[u][v]['color'] for u, v in straight_edges]
-    edge_colors_curved = [graph[u][v]['color'] for u, v in curved_edges]
+    edge_colors_straight = [graph[u][v]['color'] for u, v in straight_edges] if straight_edges else ['black']
+    edge_colors_curved = [graph[u][v]['color'] for u, v in curved_edges] if curved_edges else ['black']
 
     # Draw nodes
     nx.draw_networkx_nodes(graph, pos, node_color='lightblue', node_size=800, ax=ax)
     nx.draw_networkx_labels(graph, pos, font_size=12, font_color='black', ax=ax)
 
     # Draw solid straight edges
-    nx.draw_networkx_edges(
-        graph, pos, edgelist=solid_edges, edge_color=edge_colors_straight,
-        arrows=True, arrowstyle='-|>', arrowsize=8, min_target_margin=15, ax=ax
-    )
+    if solid_edges:
+        nx.draw_networkx_edges(
+            graph, pos, edgelist=solid_edges, edge_color=edge_colors_straight,
+            arrows=True, arrowstyle='-|>', arrowsize=8, min_target_margin=15, ax=ax
+        )
 
     # Draw curved edges with arc style
-    nx.draw_networkx_edges(
-        graph, pos, edgelist=curved_edges, edge_color=edge_colors_curved,
-        arrows=True, arrowstyle='-|>', arrowsize=8, min_target_margin=15,
-        connectionstyle='arc3,rad=0.3', ax=ax
-    )
+    if curved_edges:
+        nx.draw_networkx_edges(
+            graph, pos, edgelist=curved_edges, edge_color=edge_colors_curved,
+            arrows=True, arrowstyle='-|>', arrowsize=8, min_target_margin=15,
+            connectionstyle='arc3,rad=0.3', ax=ax
+        )
 
     # Draw dotted edges for exogenous nodes
-    nx.draw_networkx_edges(
-        graph, pos, edgelist=dotted_edges, edge_color='black',
-        arrows=True, arrowstyle='-|>', arrowsize=8, min_target_margin=15, ax=ax,
-        style=(0, (15, 10))  # Custom dash pattern for long dashes
-    )
+    if dotted_edges:
+        nx.draw_networkx_edges(
+            graph, pos, edgelist=dotted_edges, edge_color='black',
+            arrows=True, arrowstyle='-|>', arrowsize=8, min_target_margin=15, ax=ax,
+            style=(0, (15, 10))  # Custom dash pattern for long dashes
+        )
 
     ax.set_aspect('equal')
     ax.set_title(title)
+
 
 
 def aggregate_results(results_data, ground_truth_A_list, ground_truth_D_list):
@@ -516,6 +518,9 @@ def interpret_causal_experiment(directory_path, edge_threshold=0.5, v_eps=1, sho
                                                                                    display_plot=display_plot, latent=latent)
             shd_wot_list.append(shd_wot)
             shd_appex_list.append(shd_appex)
+            if latent:
+                v_shd_wot_list.append(v_shd_wot)
+                v_shd_appex_list.append(v_shd_appex)
             # print('SHD WOT:', shd_wot)
             # print('SHD APPEX:', shd_appex)
             # plot_causal_graphs_latent(true_A, est_A_0, est_A_30, true_D, est_D_0, est_D_30, edge_threshold=0.5)
@@ -593,12 +598,12 @@ def plot_exp_results(exp_number, version=None, d=None, num_reps=2, N=500, seed=0
 # plot_exp_results(exp_number = 1, version = 1, num_reps=2, seed=1)
 # plot_exp_results(exp_number = 2, version = 2, num_reps=10)
 
-ds = [10]
-ps = [0.1]
+ds = [5,10]
+ps = [0.5]
 
 for d in ds:
     for p in ps:
-        directory_path = f'Results_experiment_causal_sufficiency_random_{d}_sparsity_{p}_seed-1'
-        # directory_path = f'Results_experiment_latent_confounder_random_{d}_sparsity_{p}_seed-1'
-        interpret_causal_experiment(directory_path, show_stats=True, display_plot=True, latent=True, edge_threshold=0.5,
+        # directory_path = f'Results_experiment_causal_sufficiency_random_{d}_sparsity_{p}_seed-1'
+        directory_path = f'Results_experiment_latent_confounder_random_{d}_sparsity_{p}_seed-1'
+        interpret_causal_experiment(directory_path, show_stats=False, display_plot=False, latent=True, edge_threshold=0.5,
                                    v_eps=0.5)
