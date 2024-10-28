@@ -26,21 +26,22 @@ def APPEX_iteration(X, dt, T=1, cur_est_A=None, cur_est_H=None, linearization=Tr
     if cur_est_H is None:
         cur_est_H = np.eye(d)
     # perform trajectory inference via generalized entropic optimal transport with respect to reference SDE
-    X_OT = GEOT_trajectory_inference(X, dt, cur_est_A, cur_est_H, linearization=linearization,
+    X_OT = AEOT_trajectory_inference(X, dt, cur_est_A, cur_est_H, linearization=linearization,
                                                 report_time_splits=report_time_splits, log_sinkhorn=log_sinkhorn)
     # estimate drift and observational diffusion from inferred trajectories via closed form MLEs
     if linearization:
         A_OT = estimate_A(X_OT, dt)
         H_OT = estimate_GGT(X_OT, T, est_A=A_OT)
     else:
+        # only supported for dimension 1
         A_OT = estimate_A_exact_1d(X_OT, dt)
         H_OT = estimate_GGT_exact_1d(X_OT, T, est_A=A_OT)
     return A_OT, H_OT
 
-def GEOT_trajectory_inference(X, dt, est_A, est_GGT, linearization=True, report_time_splits=False,
+def AEOT_trajectory_inference(X, dt, est_A, est_GGT, linearization=True, report_time_splits=False,
                                          epsilon=1e-8, log_sinkhorn = False, N_sample_traj=1000):
     '''
-    Leverages generalized entropic optimal transport to infer trajectories from marginal samples
+    Leverages anisotropic entropic optimal transport to infer trajectories from marginal samples
     :param X: measured population snapshots
     :param dt: time step
     :param est_A: pre-estimated drift for reference SDE
@@ -56,7 +57,7 @@ def GEOT_trajectory_inference(X, dt, est_A, est_GGT, linearization=True, report_
     num_time_steps = len(marginal_samples)
     d = marginal_samples[0].shape[1]
     num_trajectories = marginal_samples[0].shape[0]
-    ps = []  # transport plans
+    ps = []  # transport plans for each pair of consecutive marginals
     sinkhorn_time = 0
     K_time = 0
     for t in range(num_time_steps - 1):
@@ -127,8 +128,17 @@ def GEOT_trajectory_inference(X, dt, est_A, est_GGT, linearization=True, report_
         print('Time creating trajectories', ot_traj_time)
     return X_OT
 
-
-def sinkhorn(a, b, K, maxiter=1000, stopThr=1e-9, epsilon=1e-2, log_threshold=1e-10):
+def sinkhorn(a, b, K, maxiter=1000, stopThr=1e-9, epsilon=1e-2):
+    '''
+    Sinkhorn algorithm given Gibbs kernel K
+    :param a: first marginal
+    :param b: second marginal
+    :param K: Gibbs kernel
+    :param maxiter: max number of iteraetions
+    :param stopThr: threshold for stopping
+    :param epsilon: second stopping threshold
+    :return:
+    '''
     u = np.ones(K.shape[0])
     v = np.ones(K.shape[1])
 
@@ -147,6 +157,16 @@ def sinkhorn(a, b, K, maxiter=1000, stopThr=1e-9, epsilon=1e-2, log_threshold=1e
     return tmp
 
 def sinkhorn_log(a, b, K, maxiter=500, stopThr=1e-9, epsilon=1e-5):
+    '''
+    Logarithm-domain Sinkhorn algorithm given Gibbs kernel K
+    :param a: first marginal
+    :param b: second marginal
+    :param K: Gibbs kernel K
+    :param maxiter: max number of iterations
+    :param stopThr: threshold for stopping
+    :param epsilon: second stopping threshold
+    :return:
+    '''
     # Initialize log-domain variables
     log_K = np.log(K + 1e-300)  # Small constant to prevent log(0)
     log_a = np.log(a + 1e-300)
@@ -175,7 +195,7 @@ def sinkhorn_log(a, b, K, maxiter=500, stopThr=1e-9, epsilon=1e-5):
 
 def estimate_A(X, dt, pinv=False):
     """
-    Calculate the closed form estimator A_hat for time homogeneous linear drift from multiple trajectories
+    Calculate the approximate closed form estimator A_hat for time homogeneous linear drift from multiple trajectories
 
     Parameters:
         trajectories (numpy.ndarray): 3D array (num_trajectories, num_steps, d),
@@ -208,7 +228,7 @@ def estimate_A(X, dt, pinv=False):
 
 def estimate_A_exact_1d(X, dt):
     """
-    Calculate the closed form estimator A_hat using observed data from multiple trajectories
+    Calculate the exact closed form estimator A_hat using observed data from multiple trajectories
     Applicable only for dimension d=1
 
     Parameters:
@@ -239,7 +259,8 @@ def estimate_A_exact_1d(X, dt):
 
 def estimate_GGT(trajectories, T, est_A=None):
     """
-    Estimate the observational diffusion GG^T for time homogeneous additive noise from multiple trajectories
+    Estimate the observational diffusion GG^T for a multidimensional linear
+    additive noise SDE from multiple trajectories
 
     Parameters:
         trajectories (numpy.ndarray): 3D array (num_trajectories, num_steps, d),
@@ -276,8 +297,8 @@ def estimate_GGT(trajectories, T, est_A=None):
 
 def estimate_GGT_exact_1d(X, T, est_A=None):
     """
-    Estimate the matrix GG^T from multiple trajectories of a multidimensional
-    Ornstein-Uhlenbeck process.
+    Calculate the exact MLE estimator for the matrix GG^T from multiple trajectories of a multidimensional linear
+    additive noise SDE. Applicable only for dimension d=1.
 
     Parameters:
         X (numpy.ndarray): A 3D array where each "slice" (2D array) corresponds to a single trajectory.

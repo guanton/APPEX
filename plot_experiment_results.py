@@ -139,9 +139,8 @@ def plot_causal_graphs(true_A, est_A_0, est_A_30, true_H, est_H_0, est_H_30, edg
                             exog_node = f'U_{i + 1}{j + 1}'
                             graph.add_node(exog_node)
                             pos[exog_node] = get_exogenous_position(pos, (i + 1, j + 1))
-                            # Assign dashed, black edges only for exogenous connections
-                            graph.add_edge(exog_node, i + 1, color='black', style='dotted')
-                            graph.add_edge(exog_node, j + 1, color='black', style='dotted')
+                            graph.add_edge(exog_node, i + 1, color='white', style='dotted')
+                            graph.add_edge(exog_node, j + 1, color='white', style='dotted')
 
                 # Collect coordinates for axis limits
                 x_values, y_values = zip(*pos.values())
@@ -208,25 +207,49 @@ def plot_causal_graphs(true_A, est_A_0, est_A_30, true_H, est_H_0, est_H_30, edg
             plt.tight_layout()
             plt.show()
     return shd_wot, shd_appex, v_shd_wot, v_shd_appex
-def plot_single_graph(graph, pos, title, ax):
-    # Separate edges by type (straight, curved, solid, and dotted)
-    straight_edges = [(u, v) for u, v, curved in graph.edges(data='curved') if not curved]
-    curved_edges = [(u, v) for u, v, curved in graph.edges(data='curved') if curved]
-    dotted_edges = [(u, v) for u, v, style in graph.edges(data='style') if style == 'dotted']
-    solid_edges = [(u, v) for u, v, style in graph.edges(data='style') if style == 'solid']
 
-    # Combine edge types and assign their respective colors
-    edge_colors_straight = [graph[u][v]['color'] for u, v in straight_edges] if straight_edges else ['black']
-    edge_colors_curved = [graph[u][v]['color'] for u, v in curved_edges] if curved_edges else ['black']
+def filter_redundant_edges(graph):
+    filtered_edges = {}
+    for u, v, data in graph.edges(data=True):
+        key = (u, v)
+        if key not in filtered_edges:
+            filtered_edges[key] = data
+        else:
+            # Prioritize based on color, e.g., prioritize red over green
+            if data.get('color') == 'red':
+                filtered_edges[key] = data
+            # If the existing edge is not red and the new one is, replace it
+            elif filtered_edges[key].get('color') != 'red' and data.get('color') == 'red':
+                filtered_edges[key] = data
+    return filtered_edges
+
+def plot_single_graph(graph, pos, title, ax):
+    # Filter for unique edges to avoid conflicts
+    filtered_edges = filter_redundant_edges(graph)
+
+    # Separate edges by type (straight, curved, solid, and dotted)
+    straight_edges = [(u, v) for (u, v), data in filtered_edges.items() if not data.get('curved', False)]
+    curved_edges = [(u, v) for (u, v), data in filtered_edges.items() if data.get('curved', False)]
+    dotted_edges = [(u, v) for (u, v), data in filtered_edges.items() if data.get('style') == 'dotted']
+    solid_edges = [(u, v) for (u, v), data in filtered_edges.items() if data.get('style') == 'solid']
+
+    # Assign edge colors
+    edge_colors_straight = [filtered_edges[(u, v)]['color'] for u, v in straight_edges] if straight_edges else ['black']
+    edge_colors_curved = [filtered_edges[(u, v)]['color'] for u, v in curved_edges] if curved_edges else ['black']
+
+    # Handle self-loops by choosing one color (e.g., prioritize red self-loops)
+    self_loops = [(u, v) for u, v in filtered_edges if u == v]
+    if self_loops:
+        self_loops = [(u, v) for u, v in self_loops if filtered_edges[(u, v)].get('color') == 'red']
 
     # Draw nodes
     nx.draw_networkx_nodes(graph, pos, node_color='lightblue', node_size=800, ax=ax)
     nx.draw_networkx_labels(graph, pos, font_size=12, font_color='black', ax=ax)
 
     # Draw solid straight edges
-    if solid_edges:
+    if straight_edges:
         nx.draw_networkx_edges(
-            graph, pos, edgelist=solid_edges, edge_color=edge_colors_straight,
+            graph, pos, edgelist=straight_edges, edge_color=edge_colors_straight,
             arrows=True, arrowstyle='-|>', arrowsize=8, min_target_margin=15, ax=ax
         )
 
@@ -246,9 +269,15 @@ def plot_single_graph(graph, pos, title, ax):
             style=(0, (15, 10))  # Custom dash pattern for long dashes
         )
 
+    # Draw self-loops, prioritizing red self-loops
+    if self_loops:
+        nx.draw_networkx_edges(
+            graph, pos, edgelist=self_loops, edge_color='red',
+            arrows=True, arrowstyle='-|>', arrowsize=8, min_target_margin=15, ax=ax
+        )
+
     ax.set_aspect('equal')
     ax.set_title(title)
-
 
 
 def aggregate_results(results_data, ground_truth_A_list, ground_truth_D_list):
@@ -280,9 +309,12 @@ def aggregate_results(results_data, ground_truth_A_list, ground_truth_D_list):
             ground_truth_A = ground_truth_A_list[key - 1]
             ground_truth_D = ground_truth_D_list[key - 1]
 
+
+
             # Retrieve the estimated values for A and D at the current iteration
             A = results_data[key]['est A values'][iteration]
             D = results_data[key]['est D values'][iteration]
+
 
             # Compute MAE
             A_maes.append(compute_mae(A, ground_truth_A))
@@ -360,23 +392,29 @@ def plot_mae_and_correlation_vs_iterations(results_data_version1, ground_truth_A
     print('APPEX MAE in H:', D_mean_maes_1[-1], '+-', D_mae_std_errs_1[-1])
 
     # Customize the MAE plot
-    plt.xlabel('Iteration')
-    plt.ylabel('MAE')
-    plt.legend()
+    plt.xlabel('Iteration', fontsize=18)
+    plt.tick_params(labelsize=10)
+    plt.tick_params(axis='both', which='major', labelsize=12)
+    plt.ylabel('MAE', fontsize=18)
+    plt.legend(fontsize=18)
     plt.grid(True)
-    if exp_title is not None:
-        plt.title(f'MAE of Estimated Parameters vs Iterations for {exp_title}')
-    else:
-        plt.title(f'MAE of Estimated Parameters vs Iterations')
+    # if exp_title is not None:
+    #     plt.title(f'MAE of Estimated Parameters vs Iterations for {exp_title}')
+    # else:
+    #     plt.title(f'MAE of Estimated Parameters vs Iterations')
+    plt.tight_layout()
     plt.show()
 
     # Create a second plot for correlations
     plt.figure(figsize=(10, 6))
 
     # Plot correlation for version 1
-    plt.errorbar(iterations, A_correlations_1, label='Correlation between estimated A and true A', color='black',
-                 linestyle='-', marker='o')
-    plt.errorbar(iterations, D_correlations_1, label='Correlation between estimated H and true H', color='black',
+    plt.errorbar(iterations, A_correlations_1, yerr=A_cor_std_errs_1, label='Correlation between estimated A and true A',
+                 color='black',
+                 linestyle='-', marker='o', markerfacecolor='none', markeredgecolor='black')
+    plt.errorbar(iterations, D_correlations_1, yerr=D_cor_std_errs_1,
+                 label='Correlation between estimated H and true H',
+                 color='black',
                  linestyle=':', marker='o', markerfacecolor='none', markeredgecolor='black')
 
 
@@ -385,14 +423,17 @@ def plot_mae_and_correlation_vs_iterations(results_data_version1, ground_truth_A
     print('WOT correlation in H:', D_correlations_1[0], '+-',D_cor_std_errs_1[0])
     print('APPEX correlation in H:', D_correlations_1[-1], '+-',D_cor_std_errs_1[-1])
     # Customize the correlation plot
-    plt.xlabel('Iteration')
-    plt.ylabel('Correlation')
-    plt.legend()
+    plt.xlabel('Iteration', fontsize=18)
+    plt.ylabel('Correlation', fontsize=18)
+    plt.tick_params(labelsize=10)
+    plt.tick_params(axis='both', which='major', labelsize=12)
+    plt.legend(fontsize=18)
     plt.grid(True)
-    if exp_title is not None:
-        plt.title(f'Correlation of Estimated Parameters vs Iterations for {exp_title}')
-    else:
-        plt.title(f'Correlation of Estimated Parameters vs Iterations')
+    # if exp_title is not None:
+    #     plt.title(f'Correlation of Estimated Parameters vs Iterations for {exp_title}')
+    # else:
+    #     plt.title(f'Correlation of Estimated Parameters vs Iterations')
+    plt.tight_layout()
     plt.show()
 
 
@@ -582,19 +623,25 @@ def plot_exp_results(exp_number, version=None, d=None, num_reps=2, N=500, seed=1
                                                exp_title=f'SDE {version} from example {exp_number}')
 
 
-# ds = [3,4,5]
+'''
+# Example usage
+'''
+# plot_exp_results(exp_number = 2, version = 1, num_reps=10, seed=1)
+# plot_exp_results(exp_number = 2, version = 2, num_reps=10, seed=1)
+# plot_exp_results(exp_number = 3, version = 1, num_reps=10, seed=1)
+# plot_exp_results(exp_number = 3, version = 2, num_reps=10, seed=1)
+# plot_exp_results(exp_number = 1, version = 1, num_reps=10)
+# plot_exp_results(exp_number='random', d=3, num_reps=10, seed=42)
+# plot_exp_results(exp_number='random', d=10, num_reps=10, seed=42)
+# plot_exp_results(exp_number='random', d=3, num_reps=1, seed=9)
+# ds = [3]
+# ps = [0.1]
+# # seeds = [1]
+# seeds = np.arange(3,19)
 # for d in ds:
-#     plot_exp_results(exp_number='random', d=d, num_reps=10)
-# plot_exp_results(exp_number = 1, version = 1, num_reps=2, seed=1)
-# plot_exp_results(exp_number = 2, version = 2, num_reps=10)
-
-
-ds = [5,10]
-ps = [0.5]
-
-for d in ds:
-    for p in ps:
-        # directory_path = f'Results_experiment_causal_sufficiency_random_{d}_sparsity_{p}_seed-1'
-        directory_path = f'Results_experiment_latent_confounder_random_{d}_sparsity_{p}_seed-1'
-        interpret_causal_experiment(directory_path, show_stats=False, display_plot=False, latent=True, edge_threshold=0.5,
-                                   v_eps=0.5)
+#     for p in ps:
+#         for seed in seeds:
+#             directory_path = f'Results_experiment_causal_sufficiency_random_{d}_sparsity_{p}_seed-{seed}'
+#             # directory_path = f'Results_experiment_latent_confounder_random_{d}_sparsity_{p}_seed-1'
+#             interpret_causal_experiment(directory_path, show_stats=False, display_plot=False, latent=True, edge_threshold=0.5,
+#                                        v_eps=0.5)

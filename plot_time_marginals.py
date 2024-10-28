@@ -4,18 +4,18 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import multivariate_normal
 from data_generation import *
-from APPEX import GEOT_trajectory_inference
+from APPEX import AEOT_trajectory_inference
 
 # Parameters
 N = 500  # Number of trajectories
 dt = 0.05  # Measurement time step
-T = 1  # Total time
+T = 3 # Total time
 dt_EM = 0.01  # Euler-Maruyama discretization time step
 
 # Configure plotting options
 make_gif = True
 plot_individual_trajectories = False
-perform_GEOT = False
+perform_AEOT = False
 hist_time_jump = 1
 confidence_interval = 0.99
 gif_frame_paths = []
@@ -66,13 +66,18 @@ def rank_degeneracy_non_identifiability(identifiable):
     return A_list, G_list, X0_dist, gif_filename
 
 
-A_list, G_list, X0_dist, gif_filename = classic_isotropic(False)
-# A_list, G_list, X0_dist, gif_filename = rank_degeneracy_non_identifiability(True)
-# A_list, G_list, X0_dist, gif_filename = skewed_ellipse(True)
+'''
+Implement custom list of drift matrices A, diffusion matrices G, to go along with X0_dist and a gif_filename
+or use a pre-set (some examples below
+'''
 # A_list = [np.array([[0]])]
 # G_list = [np.eye(1)]
 # points = generate_independent_points(1, 1)
 # X0_dist = [(point, 1 / len(points)) for point in points]
+
+A_list, G_list, X0_dist, gif_filename = classic_isotropic(True)
+# A_list, G_list, X0_dist, gif_filename = rank_degeneracy_non_identifiability(True)
+# A_list, G_list, X0_dist, gif_filename = skewed_ellipse(False)
 
 
 # Temporal marginals storage
@@ -88,9 +93,9 @@ for i, (A, G) in enumerate(zip(A_list, G_list)):
     X_measured_list.append(X_measured)
     if plot_individual_trajectories:
         plot_trajectories(X_measured, T, N_truncate=5, title=f'Raw trajectories with A={A}, G={G}')
-    if perform_GEOT:
-        X_OT = GEOT_trajectory_inference(X_measured, dt, A, np.matmul(G, G.T))
-        plot_trajectories(X_OT, T, N_truncate=5, title=f'GEOT trajectories from marginals given A={A}, G={G}')
+    if perform_AEOT:
+        X_OT = AEOT_trajectory_inference(X_measured, dt, A, np.matmul(G, G.T))
+        plot_trajectories(X_OT, T, N_truncate=5, title=f'AEOT trajectories from marginals given A={A}, G={G}')
 
 
 # Define helper function to ensure covariance matrix is positive definite
@@ -117,89 +122,91 @@ def filter_outliers(data, confidence_interval):
 
 # Determine global axis limits for consistent plotting
 num_steps = int(T / dt) + 1
+# Padding for the axes to make them less square
+
+# Determine global axis limits for consistent plotting with padding
 x_min, x_max, y_min, y_max = None, None, None, None
 
 for i in range(0, num_steps, hist_time_jump):
     for X_measured in X_measured_list:
         time_marginal = X_measured[:, i, :]
-        x_min_current, x_max_current = np.min(time_marginal[:, 0]), np.max(time_marginal[:, 0])
-        y_min_current, y_max_current = np.min(time_marginal[:, 1]), np.max(time_marginal[:, 1])
-        x_min = x_min_current if x_min is None or x_min_current < x_min else x_min
-        x_max = x_max_current if x_max is None or x_max_current > x_max else x_max
-        y_min = y_min_current if y_min is None or y_min_current < y_min else y_min
-        y_max = y_max_current if y_max is None or y_max_current > y_max else y_max
+        if time_marginal.size > 0:
+            x_min_current, x_max_current = np.min(time_marginal[:, 0]), np.max(time_marginal[:, 0])
+            y_min_current, y_max_current = np.min(time_marginal[:, 1]), np.max(time_marginal[:, 1])
+            x_min = min(x_min, x_min_current) if x_min is not None else x_min_current
+            x_max = max(x_max, x_max_current) if x_max is not None else x_max_current
+            y_min = min(y_min, y_min_current) if y_min is not None else y_min_current
+            y_max = max(y_max, y_max_current) if y_max is not None else y_max_current
 
-# Plot the temporal marginals at each time step
+# Add padding to the limits to avoid overly square plots
+x_min, x_max = (x_min), (x_max)
+y_min, y_max = (y_min), (y_max)
+
+# Plot the temporal marginals with adjusted axes and bold/red contours
 for i in range(0, num_steps, hist_time_jump):
     num_sdes = len(X_measured_list)
     fig = plt.figure(figsize=(6 * num_sdes, 6))
     gs = gridspec.GridSpec(1, num_sdes)
 
-    # Global title about time marginal
-    global_title = f'Marginal at time {round(i * dt, 2)}'
-    plt.suptitle(global_title, fontsize=16, y=0.95)
+    plt.suptitle(f'Marginal at time {round(i * dt, 2)}', fontsize=18, y=0.92)
 
     for m, X_measured in enumerate(X_measured_list):
         ax = fig.add_subplot(gs[0, m])
         time_marginal = X_measured[:, i, :]
 
-        # Filter outliers
+        # Filter outliers more aggressively
         mask = filter_outliers(time_marginal, confidence_interval)
         filtered_time_marginal = time_marginal[mask]
 
-        # Add artificial points at the corners to ensure no white space
-        artificial_points = np.array([
-            [x_min, y_min],
-            [x_min, y_max],
-            [x_max, y_min],
-            [x_max, y_max]
-        ])
-        extended_data = np.vstack([filtered_time_marginal, artificial_points])
+        # Create a grid for the Gaussian PDF
+        xgrid = np.linspace(x_min, x_max, 100)
+        ygrid = np.linspace(y_min, y_max, 100)
+        X, Y = np.meshgrid(xgrid, ygrid)
 
-        # Create a 2D histogram of the marginal data
-        H, xedges, yedges = np.histogram2d(extended_data[:, 0], extended_data[:, 1], bins=(100, 100), density=True)
-        # Create meshgrid for the plot
-        x_midpoints = (xedges[:-1] + xedges[1:]) / 2
-        y_midpoints = (yedges[:-1] + yedges[1:]) / 2
-        X, Y = np.meshgrid(x_midpoints, y_midpoints)
-
-        # Plot the filled contour to fill the background
-        contour = ax.contourf(X, Y, H.T, levels=100, cmap='viridis')
-
-        # Calculate the empirical mean and covariance
+        # Compute Gaussian PDF over the grid
         empirical_mean = np.mean(filtered_time_marginal, axis=0)
         empirical_covariance = np.cov(filtered_time_marginal, rowvar=False)
         empirical_covariance = ensure_positive_definite(empirical_covariance)
 
-        # Create a grid for the Gaussian PDF
         pos = np.dstack((X, Y))
         rv = multivariate_normal(empirical_mean, empirical_covariance, allow_singular=True)
         Z = rv.pdf(pos)
 
-        # Overlay the Gaussian PDF as a contour plot with a few contour levels
-        num_contour_levels = 5  # Choose the number of contour levels (e.g., 5 for a few rings)
+        #
+        # Plot bold red contours with more levels and ensure strictly increasing levels
+        num_contour_levels = 10  # Increase the number of contours for more detail
         contour_levels = np.linspace(Z.min(), Z.max(), num_contour_levels)
 
-        # Ensure that contour levels are strictly increasing and within the range of the data
-        contour_levels = np.sort(np.unique(contour_levels))
-        contour_levels = contour_levels[contour_levels > Z.min()]  # Remove levels at or below Z.min()
-        ax.contour(X, Y, Z, levels=contour_levels, colors='red')
+        # Ensure contour_levels is strictly increasing by checking unique levels
+        # contour_levels = np.unique(np.clip(contour_levels, Z.min() + 1e-10, Z.max()))
+        ax.contour(X, Y, Z, levels=contour_levels, colors='red', linewidths=2.0, zorder=10)  # Thicker contours
 
+        # Plot distinct points after the contours with a lower zorder
+        ax.scatter(filtered_time_marginal[:, 0], filtered_time_marginal[:, 1],
+                   color='grey', s=20, zorder=5, marker='o', alpha=0.8)
+
+        # Set uniform axis limits across all frames with added padding
         ax.set_xlim(x_min, x_max)
         ax.set_ylim(y_min, y_max)
-        ax.axhline(0, color='white', linewidth=.5)
-        ax.axvline(0, color='white', linewidth=.5)
-        ax.set_xlabel('X axis')
-        ax.set_ylabel('Y axis')
+        ax.axhline(0, color='grey', linewidth=0.5)
+        ax.axvline(0, color='grey', linewidth=0.5)
+        ax.set_xlabel('X', fontsize=18)
+        ax.set_ylabel('Y', fontsize=18)
+        ax.tick_params(labelsize=10)
+        ax.tick_params(axis='both', which='major', labelsize=12)
 
-        # Set subplot title with equation
-        # Add drift and diffusion matrices to the plot
         drift_text = f'A={matrix_to_text(A_list[m])}'
         diffusion_text = f'G={matrix_to_text(G_list[m])}'
-        ax.text(0.05, 0.95, drift_text, transform=ax.transAxes, fontsize=16, verticalalignment='top',
-                bbox=dict(facecolor='lightblue', alpha=0.5))
-        ax.text(0.95, 0.95, diffusion_text, transform=ax.transAxes, fontsize=16, verticalalignment='top',
-                horizontalalignment='right', bbox=dict(facecolor='lightcoral', alpha=0.5))
+        if m == 0:
+            x_adjust = 0.25
+        else:
+            x_adjust = 0.27
+        ax.text(x_adjust, 0.95, drift_text, transform=ax.transAxes, fontsize=15, verticalalignment='top', horizontalalignment='right',
+                bbox=dict(facecolor='lightgrey', alpha=0.7))
+        ax.text(0.95, 0.95, diffusion_text, transform=ax.transAxes, fontsize=15, verticalalignment='top',
+                horizontalalignment='right', bbox=dict(facecolor='lightgrey', alpha=0.7))
+
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
 
     # Save each frame for the GIF
     if make_gif:
@@ -209,8 +216,8 @@ for i in range(0, num_steps, hist_time_jump):
         gif_frame_paths.append(frame_filename)
     plt.close()
 
+
 if make_gif:
-    # Create GIF from saved frames
     os.makedirs('marginals_gifs', exist_ok=True)
     gif_file_path = os.path.join('marginals_gifs', gif_filename)
     with imageio.get_writer(gif_file_path, mode='I', duration=1, loop=0) as writer:
@@ -218,8 +225,8 @@ if make_gif:
             image = imageio.imread(frame_path)
             writer.append_data(image)
 
-    print(f"GIF saved as {gif_filename}")
-
-    # Delete saved frames after GIF creation
     for frame_path in gif_frame_paths:
         os.remove(frame_path)
+    print(f"GIF saved as {gif_filename}")
+
+
