@@ -5,11 +5,10 @@ APPEX is a Python library for estimating the drift, diffusion, and causal graph 
 ## Key Features and General Usage
 Currently, only time-homogeneous linear additive noise are supported.
 - **Data Generation**: Generate synthetic temporal marginals from SDEs. Relevant functions are found in `data_generation.py`
-  For example, an example of non-identifiability from rotational invariance is visualized as:
+- **Visualization**: Using `plot_time_marginals.py`, you can make fun gifs of the evolutions of the temporal marginals of various SDEs to visualize identifiability/non-identifiability. For example, an example of non-identifiability from rotational invariance is visualized as:
   ![Non-identifiability from rotational invariance](marginals_gifs/classic_isotropic_non_identifiable.gif)
   and this non-identifiability can be resolved if the initial distribution is not auto-rotationally invariant
   ![identifiability from rotational invariance](marginals_gifs/classic_isotropic_identifiable.gif)
-- **Visualization**: Using `plot_time_marginals.py`, you can make fun gifs of the evolutions of the temporal marginals of various SDEs to visualize identifiability/non-identifiability.
 - **Experimentation**: Run experiments for parameter estimation and causal discovery using our APPEX algorithm in `experiments.py`. Plot and interpret them with `plot_experiment_results.py` 
 
 ## Installation
