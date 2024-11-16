@@ -128,7 +128,7 @@ def sample_X0(d, X0_dist=None):
         return np.random.multivariate_normal(np.zeros(d), cov_matrix)
 
 
-def linear_additive_noise_data(num_trajectories, d, T, dt_EM, dt, A, G, X0_dist=None, destroyed_samples=False, shuffle=True):
+def linear_additive_noise_data(num_trajectories, d, T, dt_EM, dt, A, G, X0_dist=None, destroyed_samples=False, shuffle=False):
     '''
     Args:
         num_trajectories: number of trajectories

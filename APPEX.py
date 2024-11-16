@@ -5,6 +5,35 @@ from scipy.stats import multivariate_normal
 from utils import *
 from scipy.special import logsumexp
 
+def compute_nll(X_OT, A_OT, H_OT, dt):
+    """
+    Compute the negative log-likelihood of the current inferred trajectories under the current inferred model parameters.
+    :param X_OT: inferred trajectories, shape (num_trajectories, num_time_steps, d)
+    :param A_OT: estimated drift matrix, shape (d, d)
+    :param H_OT: estimated diffusion matrix, shape (d, d)
+    :param dt: time step size
+    :return: average NLL per trajectory
+    """
+    num_trajectories, num_steps, d = X_OT.shape
+    total_nll = 0.0
+    H_dt = H_OT * dt
+    # Precompute inverse and determinant of H_dt
+    H_dt_inv = np.linalg.pinv(H_dt)
+    sign, logdet_H_dt = np.linalg.slogdet(H_dt)
+    const_term = 0.5 * (d * np.log(2 * np.pi) + logdet_H_dt)
+    for traj in X_OT:
+        nll = 0.0
+        for t in range(num_steps - 1):
+            X_t = traj[t]
+            X_tp1 = traj[t + 1]
+            # Compute mean: mu_t = e^{A dt} X_t (approximate if needed)
+            mu_t = X_t + A_OT @ X_t * dt  # Using Euler-Maruyama approximation
+            diff = X_tp1 - mu_t
+            exponent = 0.5 * diff.T @ H_dt_inv @ diff
+            nll += exponent + const_term
+        total_nll += nll
+    avg_nll = total_nll / num_trajectories
+    return avg_nll
 
 def APPEX_iteration(X, dt, T=1, cur_est_A=None, cur_est_H=None, linearization=True,
                     report_time_splits=False, log_sinkhorn=False):
@@ -28,15 +57,20 @@ def APPEX_iteration(X, dt, T=1, cur_est_A=None, cur_est_H=None, linearization=Tr
     # perform trajectory inference via generalized entropic optimal transport with respect to reference SDE
     X_OT = AEOT_trajectory_inference(X, dt, cur_est_A, cur_est_H, linearization=linearization,
                                                 report_time_splits=report_time_splits, log_sinkhorn=log_sinkhorn)
+    nll_OT = compute_nll(X_OT, cur_est_A, cur_est_H, dt)
+    print('negative log-likelihood after traj inference step:', nll_OT)
     # estimate drift and observational diffusion from inferred trajectories via closed form MLEs
     if linearization:
-        A_OT = estimate_A(X_OT, dt)
+        A_OT= estimate_A(X_OT, dt)
+        nll_A = compute_nll(X_OT, A_OT, cur_est_H, dt)
+        print('negative log-likelihood after A step:', nll_A)
         H_OT = estimate_GGT(X_OT, T, est_A=A_OT)
     else:
         # only supported for dimension 1
         A_OT = estimate_A_exact_1d(X_OT, dt)
         H_OT = estimate_GGT_exact_1d(X_OT, T, est_A=A_OT)
-    return A_OT, H_OT
+    current_nll = compute_nll(X_OT, A_OT, H_OT, dt)
+    return A_OT, H_OT, current_nll
 
 def AEOT_trajectory_inference(X, dt, est_A, est_GGT, linearization=True, report_time_splits=False,
                                          epsilon=1e-8, log_sinkhorn = False, N_sample_traj=1000):
@@ -219,6 +253,7 @@ def estimate_A(X, dt, pinv=False):
             sum_xt_xt += np.outer(xt, xt)
         sum_Edxt_Ext += sum_dxt_xt / num_trajectories
         sum_Ext_ExtT += sum_xt_xt / num_trajectories
+
 
     if pinv:
         return np.matmul(sum_Edxt_Ext, np.linalg.pinv(sum_Ext_ExtT)) * (1 / dt)

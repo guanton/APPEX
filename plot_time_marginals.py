@@ -9,7 +9,7 @@ from APPEX import AEOT_trajectory_inference
 # Parameters
 N = 500  # Number of trajectories
 dt = 0.05  # Measurement time step
-T = 3 # Total time
+T = 2 # Total time
 dt_EM = 0.01  # Euler-Maruyama discretization time step
 
 # Configure plotting options
@@ -76,7 +76,7 @@ or use a pre-set (some examples below
 # X0_dist = [(point, 1 / len(points)) for point in points]
 
 A_list, G_list, X0_dist, gif_filename = classic_isotropic(True)
-# A_list, G_list, X0_dist, gif_filename = rank_degeneracy_non_identifiability(True)
+# A_list, G_list, X0_dist, gif_filename = rank_degeneracy_non_identifiability(False)
 # A_list, G_list, X0_dist, gif_filename = skewed_ellipse(False)
 
 
@@ -178,7 +178,7 @@ for i in range(0, num_steps, hist_time_jump):
         contour_levels = np.linspace(Z.min(), Z.max(), num_contour_levels)
 
         # Ensure contour_levels is strictly increasing by checking unique levels
-        # contour_levels = np.unique(np.clip(contour_levels, Z.min() + 1e-10, Z.max()))
+        contour_levels = np.unique(np.clip(contour_levels, Z.min() + 1e-1000, Z.max()))
         ax.contour(X, Y, Z, levels=contour_levels, colors='red', linewidths=2.0, zorder=10)  # Thicker contours
 
         # Plot distinct points after the contours with a lower zorder

@@ -134,6 +134,7 @@ def run_generic_experiment(A, G, d, N=None, verbose=False, gaussian_start=False,
         exp_number)
     X_measured = linear_additive_noise_data(N, d=d, T=T, dt_EM=dt_EM, dt=dt, A=A, G=G, X0_dist=X0_dist,
                                             destroyed_samples=killed)
+    print('NLL with ground truth data:', compute_nll(X_measured, A, H, dt))
     print('shape of marginal observation data:', X_measured.shape)
     print('Estimating parameters')
     its = 1
@@ -143,11 +144,12 @@ def run_generic_experiment(A, G, d, N=None, verbose=False, gaussian_start=False,
     initial_H = random_scale * mean * np.eye(d)
     print('Initial guess for D:', initial_H)
     # run first iteration of APPEX (equivalent to WOT)
-    est_A_list, est_GGT_list = [], []
-    est_A, est_GGT = APPEX_iteration(X_measured, dt, T, cur_est_H=initial_H, linearization=linearization,
+    est_A_list, est_GGT_list, nll_list = [], [], []
+    est_A, est_GGT, nll = APPEX_iteration(X_measured, dt, T, cur_est_H=initial_H, linearization=linearization,
                                      report_time_splits=report_time_splits, log_sinkhorn=log_sinkhorn)
     est_A_list.append(est_A)
     est_GGT_list.append(est_GGT)
+    nll_list.append(nll)
 
     if verbose:
         print(f'Estimated A at iteration {its}:', est_A)
@@ -155,20 +157,23 @@ def run_generic_experiment(A, G, d, N=None, verbose=False, gaussian_start=False,
 
     print(f'MAE to true A at iteration {its}: {compute_mae(est_A, A)}')
     print(f'MAE to true H at iteration {its}: {compute_mae(est_GGT, H)}')
+    print(f'NLL at iteration {its}: {nll}')
 
     # run subsequent iterations of APPEX
     while its < max_its:
-        est_A, est_GGT = APPEX_iteration(X_measured, dt, T, cur_est_A=est_A, cur_est_H=est_GGT,
+        est_A, est_GGT, nll = APPEX_iteration(X_measured, dt, T, cur_est_A=est_A, cur_est_H=est_GGT,
                                          linearization=linearization, report_time_splits=report_time_splits,
                                          log_sinkhorn=log_sinkhorn)
         est_A_list.append(est_A)
         est_GGT_list.append(est_GGT)
+        nll_list.append(nll)
         its += 1
         if verbose:
             print(f'Estimated A at iteration {its}:', est_A)
             print(f'Estimated D at iteration {its}:', est_GGT)
         print(f'MAE to true A at iteration {its}: {compute_mae(est_A, A)}')
         print(f'MAE to true D at iteration {its}: {compute_mae(est_GGT, H)}')
+        print(f'NLL at iteration {its}: {nll}')
 
     results_data = {
         'true_A': A,
@@ -178,6 +183,7 @@ def run_generic_experiment(A, G, d, N=None, verbose=False, gaussian_start=False,
         'initial D': initial_H,
         'est D values': est_GGT_list,
         'est A values': est_A_list,
+        'nll values': nll_list,
         'N': N
     }
     return results_data
@@ -244,31 +250,31 @@ def run_generic_experiment_replicates(exp_number, num_replicates, N_list=None, v
                 pickle.dump(results_data, f)
 
 
-# First experiments based on previously non-identifiable SDEs
-run_generic_experiment_replicates(exp_number=1, version=1, num_replicates=10, d=1)
-run_generic_experiment_replicates(exp_number=2, version=1, num_replicates=10, d=2)
-run_generic_experiment_replicates(exp_number=3, version=1, num_replicates=10, d=2)
-run_generic_experiment_replicates(exp_number=1, version=2, num_replicates=10, d=1)
-run_generic_experiment_replicates(exp_number=2, version=2, num_replicates=10, d=2)
-run_generic_experiment_replicates(exp_number=3, version=2, num_replicates=10, d=2)
+# # First experiments based on previously non-identifiable SDEs
+# # run_generic_experiment_replicates(exp_number=1, version=1, num_replicates=10, d=1)
+# run_generic_experiment_replicates(exp_number=2, version=1, num_replicates=10, d=2)
+# run_generic_experiment_replicates(exp_number=3, version=1, num_replicates=10, d=2)
+# run_generic_experiment_replicates(exp_number=1, version=2, num_replicates=10, d=1)
+# run_generic_experiment_replicates(exp_number=2, version=2, num_replicates=10, d=2)
+# run_generic_experiment_replicates(exp_number=3, version=2, num_replicates=10, d=2)
 
 # Random higher dimensional experiments
-ds = [3, 4, 5, 6, 7, 8, 9, 10]
-for d in ds:
-    run_generic_experiment_replicates(exp_number='random', d=d, num_replicates=10, seed=610)
+# ds = [3, 4, 5]
+# for d in ds:
+#     run_generic_experiment_replicates(exp_number='random', d=d, num_replicates=10, seed=69)
 
 # Causal discovery experiments (causal sufficiency)
 ds_cd = [3, 5, 10]
 ps = [0.1, 0.25, 0.5]
-for d in ds_cd:
-    for p in ps:
-        run_generic_experiment_replicates(exp_number='random', d=d, num_replicates=10, p=p, causal_sufficiency=True,
-                                          causal_experiment=True)
+# for d in ds_cd:
+#     for p in ps:
+#         run_generic_experiment_replicates(exp_number='random', d=d, num_replicates=10, p=p, causal_sufficiency=True,
+#                                           causal_experiment=True)
 
 # Causal discovery experiments (latent confounder)
 ps_latent = [0.25]
 for d in ds_cd:
     for p in ps_latent:
         run_generic_experiment_replicates(exp_number='random', d=d, num_replicates=10, p=p, causal_sufficiency=False,
-                                          causal_experiment=True)
+                                          causal_experiment=True, seed=69)
 
