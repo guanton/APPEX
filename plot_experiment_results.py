@@ -280,13 +280,6 @@ def plot_single_graph(graph, pos, title, ax):
             style=(0, (15, 10))  # Custom dash pattern for long dashes
         )
 
-    # Draw self-loops, prioritizing red self-loops
-    if self_loops:
-        nx.draw_networkx_edges(
-            graph, pos, edgelist=self_loops, edge_color='red',
-            arrows=True, arrowstyle='-|>', arrowsize=8, min_target_margin=15, ax=ax
-        )
-
     ax.set_aspect('equal')
     ax.set_title(title)
 
@@ -934,7 +927,7 @@ def plot_exp_results(exp_number, version=None, d=None, num_reps=2, N=500, seed=1
 # plot_exp_results(exp_number='random', d=5, num_reps=10, seed=69)
 # plot_exp_results(exp_number='random', d=10, num_reps=10, seed=42)
 # plot_exp_results(exp_number='random', d=3, num_reps=1, seed=9)
-ds = [3,5,10]
+ds = [5]
 ps = [0.25]
 seeds = [69]
 # seeds = np.arange(3,19)
