@@ -1,18 +1,77 @@
 import numpy as np
 import time
-from scipy.linalg import expm
+from scipy.linalg import expm, sqrtm
 from scipy.stats import multivariate_normal
 from utils import *
 from scipy.special import logsumexp
+from scipy.optimize import linear_sum_assignment
+from scipy.spatial.distance import cdist
+import ot
+
+
+def compute_mmd(X_OT, A_OT, H_OT, dt, num_samples=1000):
+    """
+    Compute the Maximum Mean Discrepancy (MMD) between the empirical residual distribution and
+    the theoretical Gaussian distribution N(0, H_OT * dt).
+
+    Parameters:
+        X_OT: array-like of shape (num_trajectories, num_steps, d)
+              Inferred trajectories.
+        A_OT: array-like of shape (d, d)
+              Drift matrix used for the prediction.
+        H_OT: array-like of shape (d, d)
+              Diffusion matrix (used to form the covariance H_OT * dt).
+        dt: float
+              Time step size.
+        num_samples: int, optional (default=1000)
+              Maximum number of residual samples to use.
+
+    Returns:
+        mmd: float
+             The computed MMD value.
+    """
+
+    num_trajectories, num_steps, d = X_OT.shape
+    residuals = []
+    # Compute residuals from the Euler–Maruyama step
+    for traj in X_OT:
+        for t in range(num_steps - 1):
+            mu_t = traj[t] + A_OT @ traj[t] * dt
+            residuals.append(traj[t + 1] - mu_t)
+    residuals = np.array(residuals)
+
+    # Sample a subset of residuals if needed
+    N_total = residuals.shape[0]
+    n = min(num_samples, N_total)
+    idx = np.random.choice(N_total, n, replace=False)
+    empirical_samples = residuals[idx]
+
+    # Generate theoretical samples from N(0, H_OT*dt)
+    theoretical_samples = np.random.multivariate_normal(np.zeros(d), H_OT * dt, size=n)
+
+    # Define Gaussian kernel function
+    def gaussian_kernel(X, Y, sigma):
+        dist_sq = cdist(X, Y, 'sqeuclidean')
+        return np.exp(-dist_sq / (2 * sigma ** 2))
+
+    # Compute kernel matrices using dt as the bandwidth (this choice may be tuned)
+    K_xx = gaussian_kernel(empirical_samples, empirical_samples, dt)
+    K_yy = gaussian_kernel(theoretical_samples, theoretical_samples, dt)
+    K_xy = gaussian_kernel(empirical_samples, theoretical_samples, dt)
+
+    # Unbiased estimates: exclude the diagonal elements for K_xx and K_yy
+    m = empirical_samples.shape[0]
+    n2 = theoretical_samples.shape[0]
+    mmd_sq = ((np.sum(K_xx) - np.trace(K_xx)) / (m * (m - 1))
+              + (np.sum(K_yy) - np.trace(K_yy)) / (n2 * (n2 - 1))
+              - 2 * np.mean(K_xy))
+    return np.sqrt(max(mmd_sq, 0))
+
 
 def compute_nll(X_OT, A_OT, H_OT, dt):
     """
-    Compute the negative log-likelihood of the current inferred trajectories under the current inferred model parameters.
-    :param X_OT: inferred trajectories, shape (num_trajectories, num_time_steps, d)
-    :param A_OT: estimated drift matrix, shape (d, d)
-    :param H_OT: estimated diffusion matrix, shape (d, d)
-    :param dt: time step size
-    :return: average NLL per trajectory
+    Compute the negative log-likelihood (NLL) of the inferred trajectories under the current model.
+    (Original code; retained for metric='nll')
     """
     num_trajectories, num_steps, d = X_OT.shape
     total_nll = 0.0
@@ -26,8 +85,8 @@ def compute_nll(X_OT, A_OT, H_OT, dt):
         for t in range(num_steps - 1):
             X_t = traj[t]
             X_tp1 = traj[t + 1]
-            # Compute mean: mu_t = e^{A dt} X_t (approximate if needed)
-            mu_t = X_t + A_OT @ X_t * dt  # Using Euler-Maruyama approximation
+            # Using Euler-Maruyama: mu_t = X_t + A_OT @ X_t * dt
+            mu_t = X_t + A_OT @ X_t * dt
             diff = X_tp1 - mu_t
             exponent = 0.5 * diff.T @ H_dt_inv @ diff
             nll += exponent + const_term
@@ -35,42 +94,177 @@ def compute_nll(X_OT, A_OT, H_OT, dt):
     avg_nll = total_nll / num_trajectories
     return avg_nll
 
+def compute_w2(X_OT, A_OT, H_OT, dt, num_samples=1000, pot=False):
+    """
+    Compute the per-time-step squared Wasserstein-2 distance.
+
+    For each time step, compute the residuals (using Euler–Maruyama)
+    and then compute the W2 distance between the empirical residual distribution
+    and the theoretical N(0, H_OT * dt) distribution.
+
+    Parameters:
+        X_OT: array-like, shape (num_trajectories, num_steps, d)
+              Inferred trajectories.
+        A_OT: array-like, shape (d, d)
+              Drift matrix.
+        H_OT: array-like, shape (d, d)
+              Diffusion matrix (used in covariance H_OT * dt).
+        dt: float
+              Time step.
+        num_samples: int, optional
+              Maximum number of residual samples to use per time step.
+        pot: bool, optional (default=False)
+              If False use POT's ot.emd2; otherwise, use linear_sum_assignment
+
+    Returns:
+        max_w2: float
+             The maximum squared W2 distance across time steps.
+    """
+    num_trajectories, num_steps, d = X_OT.shape
+    w2_list = []
+
+    for t in range(num_steps - 1):
+        # Compute residuals for time step t (Euler–Maruyama update).
+        residuals = X_OT[:, t + 1, :] - (X_OT[:, t, :] + (A_OT @ X_OT[:, t, :].T).T * dt)
+        N_total = residuals.shape[0]
+        n = min(num_samples, N_total)
+        idx = np.random.choice(N_total, n, replace=False)
+        empirical_samples = residuals[idx]
+
+        # Generate theoretical samples from N(0, H_OT * dt).
+        theoretical_samples = np.random.multivariate_normal(np.zeros(d), H_OT * dt, size=n)
+
+        # Compute cost matrix (squared Euclidean distances).
+        cost_matrix = cdist(empirical_samples, theoretical_samples, metric='sqeuclidean')
+
+        if pot:
+            # Use POT's optimal transport solver.
+            p = np.ones(n) / n
+            q = np.ones(n) / n
+            w2 = ot.emd2(p, q, cost_matrix)
+            # w2 = np.sqrt(W2_squared)
+        else:
+            # Use the Hungarian algorithm from linear_sum_assignment
+            row_ind, col_ind = linear_sum_assignment(cost_matrix)
+            w2 = np.mean(cost_matrix[row_ind, col_ind])
+            # w2 = np.sqrt(avg_squared_distance)
+
+        w2_list.append(w2)
+
+    return np.max(w2_list)
+
+
+def compute_w1(X_OT, A_OT, H_OT, dt, num_samples=1000, pot=False):
+    """
+    Compute the per-time-step Wasserstein-1 (Earth Mover's) distance.
+
+    For each time step, compute the residuals and then compute the W1 distance
+    between the empirical residual distribution and the theoretical N(0, H_OT * dt)
+    distribution.
+
+    Parameters:
+        X_OT: array-like, shape (num_trajectories, num_steps, d)
+              Inferred trajectories.
+        A_OT: array-like, shape (d, d)
+              Inferred drift matrix.
+        H_OT: array-like, shape (d, d)
+              Inferred diffusion matrix (used in covariance H_OT * dt).
+        dt: float
+              Time step.
+        num_samples: int, optional
+              Maximum number of residual samples to use per time step.
+        pot: bool, optional (default=False)
+              If False use use POT's ot.emd2; otherwise, use linear_sum_assignment
+
+    Returns:
+        max_w1: float
+             The maximum W1 distance across time steps.
+    """
+    num_trajectories, num_steps, d = X_OT.shape
+    w1_list = []
+
+    for t in range(num_steps - 1):
+        # Compute residuals for time step t.
+        residuals = X_OT[:, t + 1, :] - (X_OT[:, t, :] + (A_OT @ X_OT[:, t, :].T).T * dt)
+        N_total = residuals.shape[0]
+        n = min(num_samples, N_total)
+        idx = np.random.choice(N_total, n, replace=False)
+        empirical_samples = residuals[idx]
+
+        # Generate theoretical samples from N(0, H_OT * dt)
+        theoretical_samples = np.random.multivariate_normal(np.zeros(d), H_OT * dt, size=n)
+
+        # Compute cost matrix (Euclidean distances)
+        cost_matrix = cdist(empirical_samples, theoretical_samples, metric='euclidean')
+
+        if pot:
+            # Use POT's optimal transport solver
+            p = np.ones(n) / n
+            q = np.ones(n) / n
+            w1 = ot.emd2(p, q, cost_matrix)
+        else:
+            # Use the Hungarian algorithm from linear sum assignment
+            row_ind, col_ind = linear_sum_assignment(cost_matrix)
+            avg_distance = np.mean(cost_matrix[row_ind, col_ind])
+            w1 = avg_distance
+
+        w1_list.append(w1)
+
+    return np.max(w1_list)
+
+
+def compute_convergence_score(X_OT, A_OT, H_OT, dt, metric='nll'):
+    """
+    Compute a convergence score based on the chosen metric.
+
+    Parameters:
+        metric: one of 'nll' (negative log-likelihood), 'w1' (Wasserstein-1), or 'w2' (Wasserstein-2)
+    """
+    if metric == 'nll':
+        return compute_nll(X_OT, A_OT, H_OT, dt)
+    elif metric == 'w2':
+        # print('W2 difference in implementation:', compute_w2(X_OT, A_OT, H_OT, dt) - compute_w2_pot(X_OT, A_OT, H_OT, dt))
+        return compute_w2(X_OT, A_OT, H_OT, dt)
+    elif metric == 'w1':
+        return compute_w1(X_OT, A_OT, H_OT, dt)
+    elif metric == 'mmd':
+        return compute_mmd(X_OT, A_OT, H_OT, dt)
+    else:
+        raise ValueError("Invalid metric. Choose from 'nll', 'w1', 'w2', or 'mmd'.")
+
+
 def APPEX_iteration(X, dt, T=1, cur_est_A=None, cur_est_H=None, linearization=True,
                     report_time_splits=False, log_sinkhorn=False):
     '''
-    Performs one iteration of the APPEX algorithm given current estimates of linear drift A and additive noise G
-    :param X: measured population snapshots
-    :param dt: time step
-    :param T: total time period
-    :param cur_est_A: estimated drift matrix ahead of the current iteration
-    :param cur_est_H: estimated observational diffusion matrix ahead of the current iteration
-    :param linearization: whether to use linearization for estimates
-    :param report_time_splits: whether to report time splits
-    :return:
+    Performs one iteration of the APPEX algorithm given current estimates of drift A and diffusion H.
+    Now, convergence is gauged by a user-specified metric: 'nll', 'w1', or 'w2'.
+
+    Returns:
+         (A_OT, H_OT, convergence_score)
     '''
     num_trajectories, num_steps, d = X.shape
-    # initialize estimates as Brownian motion if not provided
+    # Initialize estimates as Brownian motion if not provided
     if cur_est_A is None:
         cur_est_A = np.zeros((d, d))
     if cur_est_H is None:
         cur_est_H = np.eye(d)
-    # perform trajectory inference via generalized entropic optimal transport with respect to reference SDE
+    # Perform trajectory inference via generalized entropic optimal transport
     X_OT = AEOT_trajectory_inference(X, dt, cur_est_A, cur_est_H, linearization=linearization,
-                                                report_time_splits=report_time_splits, log_sinkhorn=log_sinkhorn)
-    nll_OT = compute_nll(X_OT, cur_est_A, cur_est_H, dt)
-    print('negative log-likelihood after traj inference step:', nll_OT)
-    # estimate drift and observational diffusion from inferred trajectories via closed form MLEs
+                                     report_time_splits=report_time_splits, log_sinkhorn=log_sinkhorn)
+    # # Compute convergence score after the trajectory inference step
+    # convergence_score_OT = compute_convergence_score(X_OT, cur_est_A, cur_est_H, dt, metric=score_metric)
+    # print(f'{score_metric} after traj inference step:', convergence_score_OT)
+    # Estimate drift and diffusion from inferred trajectories via closed-form MLEs
     if linearization:
-        A_OT= estimate_A(X_OT, dt)
-        nll_A = compute_nll(X_OT, A_OT, cur_est_H, dt)
-        print('negative log-likelihood after A step:', nll_A)
+        A_OT = estimate_A(X_OT, dt)
+        # convergence_score_A = compute_convergence_score(X_OT, A_OT, cur_est_H, dt, metric=score_metric)
+        # print(f'{score_metric} after A step:', convergence_score_A)
         H_OT = estimate_GGT(X_OT, T, est_A=A_OT)
     else:
         # only supported for dimension 1
         A_OT = estimate_A_exact_1d(X_OT, dt)
         H_OT = estimate_GGT_exact_1d(X_OT, T, est_A=A_OT)
-    current_nll = compute_nll(X_OT, A_OT, H_OT, dt)
-    return A_OT, H_OT, current_nll
+    return A_OT, H_OT
 
 def AEOT_trajectory_inference(X, dt, est_A, est_GGT, linearization=True, report_time_splits=False,
                                          epsilon=1e-8, log_sinkhorn = False, N_sample_traj=1000):

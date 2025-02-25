@@ -1,42 +1,54 @@
-import pickle
-import math
 import os
 import re
+import pickle
+import math
+import numpy as np
 import matplotlib.pyplot as plt
 import networkx as nx
-import numpy as np
 
+# ===============================
+# Helper: Get Minimum Indices
+# ===============================
+def get_min_indices(convergence_scores):
+    """
+    Given a list of dictionaries (one per iteration) with keys 'nll', 'w2', 'w1', and 'mmd'
+    return a dictionary with the iteration index (0-indexed) of the minimum value for each metric.
+    """
+    min_indices = {}
+    for key in ['nll', 'w2', 'w1', 'mmd']:
+        values = [score[key] for score in convergence_scores]
+        min_indices[key] = int(np.argmin(values))
+    return min_indices
+
+# ===============================
+# Basic Metrics
+# ===============================
+def compute_mae(estimated, ground_truth):
+    """Compute Mean Absolute Error (MAE)."""
+    return np.mean(np.abs(estimated - ground_truth))
+
+def calculate_correlation(estimated_matrix, ground_truth_matrix):
+    """Compute Pearson correlation between flattened matrices."""
+    est_flat = estimated_matrix.flatten()
+    gt_flat = ground_truth_matrix.flatten()
+    return np.corrcoef(est_flat, gt_flat)[0, 1]
+
+# ===============================
+# SHD Functions
+# ===============================
 def compute_shd(true_matrix, est_matrix, edge_threshold):
-    '''
-    Compute the Structural Hamming Distance (SHD) between two adjacency matrices, determined by drift A
-    :param true_matrix: true drift matrix
-    :param est_matrix: estimated drift matrix
-    :param edge_threshold: threshold for determining presence of a simple edge
-    :return: shd_signed: signed Structural Hamming Distance (SHD) between the true and estimated adjacency matrices
-    '''
+    """
+    Compute the Structural Hamming Distance (SHD) for direct edges.
+    An edge is considered present if abs(value) > edge_threshold.
+    """
     d = true_matrix.shape[0]
+    true_edges = {(i, j) for i in range(d) for j in range(d)
+                  if abs(true_matrix[j, i]) > edge_threshold}
+    est_edges = {(i, j) for i in range(d) for j in range(d)
+                 if abs(est_matrix[j, i]) > edge_threshold}
+    return len(true_edges.symmetric_difference(est_edges))
 
-    # Define sets for positive and negative edges in the true and estimated graphs
-    true_edges_pos = set((i, j) for i in range(d) for j in range(d)
-                         if true_matrix[j, i] > edge_threshold)
-    true_edges_neg = set((i, j) for i in range(d) for j in range(d)
-                         if true_matrix[j, i] < -edge_threshold)
-    no_edges = set((i, j) for i in range(d) for j in range(d)) - (true_edges_pos | true_edges_neg)
-
-    est_edges_pos = set((i, j) for i in range(d) for j in range(d)
-                        if est_matrix[j, i] > edge_threshold)
-    est_edges_neg = set((i, j) for i in range(d) for j in range(d)
-                        if est_matrix[j, i] < -edge_threshold)
-    no_edges_est = set((i, j) for i in range(d) for j in range(d)) - (est_edges_pos | est_edges_neg)
-
-    # Final SHD includes all mismatches and discrepancies
-    shd_signed = (len(no_edges.intersection(est_edges_pos)) + len(no_edges.intersection(est_edges_neg)) +
-                  len(true_edges_neg.intersection(est_edges_pos)) + len(true_edges_neg.intersection(no_edges_est)) +
-                  len(true_edges_pos.intersection(est_edges_neg))) + len(true_edges_pos.intersection(no_edges_est))
-
-    return shd_signed
-
-def compute_v_structure_shd(H_true, H_est, edge_threshold=0.5):
+def compute_v_structure_shd(H_true, H_est, edge_threshold=1.0):
     '''
     Compute the Structural Hamming Distance (SHD) for v-structures between two adjacency matrices, determined by diffusion H
     :param H_true: true diffusion matrix
@@ -51,890 +63,446 @@ def compute_v_structure_shd(H_true, H_est, edge_threshold=0.5):
     for i in range(d):
         for j in range(d):
             if i != j:
-                if abs(H_true[i, j]) > edge_threshold and abs(H_est[i, j]) <= edge_threshold:
+                if abs(H_true[i, j]) >= edge_threshold and abs(H_est[i, j]) < edge_threshold:
                     shd_v_structure += 1
-                elif abs(H_true[i, j]) <= edge_threshold and abs(H_est[i, j]) > edge_threshold:
+                elif abs(H_true[i, j]) < edge_threshold and abs(H_est[i, j]) >= edge_threshold:
                     shd_v_structure += 1
     return shd_v_structure / 2
 
+# ===============================
+# Graph Construction and Layout
+# ===============================
+def construct_causal_graph(A, H, edge_threshold=0.5, v_threshold=0.5):
+    """
+    Construct a directed graph from drift matrix A and diffusion matrix H.
+    Main nodes are numbered 1..d.
+    An edge from i to j is added if |A[j,i]| > edge_threshold.
+    For each pair (i,j) with i < j, if |H[i,j]| >= v_threshold, add an exogenous node "U_{i}{j}"
+    with dotted edges to both i and j.
+    """
+    d = A.shape[0]
+    G = nx.DiGraph()
+    main_nodes = list(range(1, d + 1))
+    G.add_nodes_from(main_nodes)
+    for i in range(d):
+        for j in range(d):
+            if abs(A[j, i]) > edge_threshold:
+                color = 'red' if A[j, i] < 0 else 'green'
+                G.add_edge(i + 1, j + 1, color=color, curved=False, style='solid')
+    for i in range(d):
+        for j in range(i + 1, d):
+            if abs(H[i, j]) >= v_threshold:
+                exog = f"U_{i + 1}{j + 1}"
+                G.add_node(exog)
+                G.add_edge(exog, i + 1, color='black', style='dotted')
+                G.add_edge(exog, j + 1, color='black', style='dotted')
+    return G
 
-def plot_causal_graphs(true_A, est_A_0, est_A_30, est_A_min_nll, true_H, est_H_0, est_H_30, est_H_min_nll,
-                       edge_threshold=0.5, v_eps=1, display_plot=False, latent=True, min_nll_index=None):
-    '''
-    :param true_A:
-    :param est_A_0:
-    :param est_A_30:
-    :param est_A_min_nll:
-    :param true_H:
-    :param est_H_0:
-    :param est_H_30:
-    :param est_H_min_nll:
-    :param edge_threshold:
-    :param v_eps:
-    :param display_plot:
-    :param latent:
-    :param min_nll_index:
-    :return:
-    '''
-    d = true_A.shape[0]
-    # Calculate simple SHD for all estimated graphs
-    shd_wot = compute_shd(true_A, est_A_0, edge_threshold)
-    shd_appex = compute_shd(true_A, est_A_30, edge_threshold)
-    shd_min_nll = compute_shd(true_A, est_A_min_nll, edge_threshold)
-    # Calculate v-structure SHD for all estimated graphs
-    v_shd_wot = compute_v_structure_shd(true_H, est_H_0, v_eps)
-    v_shd_appex = compute_v_structure_shd(true_H, est_H_30, v_eps)
-    v_shd_min_nll = compute_v_structure_shd(true_H, est_H_min_nll, v_eps)
-
-    if display_plot:
-        # Print SHD values
-        print("Simple Structural Hamming Distance (SHD) between True Graph and Estimated Graph by WOT:", shd_wot)
-        print("Simple Structural Hamming Distance (SHD) between True Graph and Estimated Graph by APPEX:", shd_appex)
-        print("Simple Structural Hamming Distance (SHD) between True Graph and Estimated Graph by APPEX at min NLL:", shd_min_nll)
-        print("V-structure SHD between True Graph and Estimated Graph by WOT:", v_shd_wot)
-        print("V-structure SHD between True Graph and Estimated Graph by APPEX:", v_shd_appex)
-        print("V-structure SHD between True Graph and Estimated Graph by APPEX at min NLL:", v_shd_min_nll)
-
-        if latent:
-            graphs = [
-                (true_A, true_H, "True Causal Graph"),
-                (est_A_0, est_H_0, "Estimated Causal Graph by WOT"),
-                (est_A_30, est_H_30, "Estimated Causal Graph by APPEX"),
-                (est_A_min_nll, est_H_min_nll, f"Estimated Causal Graph at Min NLL (Iteration {min_nll_index + 1})")
-            ]
-
-            # Initialize graphs for each scenario
-            plot_graphs = [nx.DiGraph() for _ in range(len(graphs))]
-            main_nodes = range(1, d + 1)
-            pos = nx.circular_layout(list(main_nodes))
-
-            # Helper function to position exogenous nodes
-            def get_exogenous_position(pos, node, offset=0.3):
-                x1, y1 = pos[node[0]]
-                x2, y2 = pos[node[1]]
-                mid_x = (x1 + x2) / 2
-                mid_y = (y1 + y2) / 2
+def compute_layout(graph, offset=0.3):
+    """
+    Compute a layout for the given graph.
+    Main nodes (integers) use a circular layout.
+    Exogenous nodes (names starting with 'U_') are positioned relative to the two main nodes.
+    """
+    main_nodes = [n for n in graph.nodes() if isinstance(n, int)]
+    pos = nx.circular_layout(main_nodes)
+    for node in graph.nodes():
+        if not isinstance(node, int):
+            m = re.match(r"U_(\d+)(\d+)", node)
+            if m:
+                i, j = int(m.group(1)), int(m.group(2))
+                x1, y1 = pos[i]
+                x2, y2 = pos[j]
+                mid_x, mid_y = (x1 + x2) / 2, (y1 + y2) / 2
                 dx, dy = x2 - x1, y2 - y1
                 length = np.sqrt(dx ** 2 + dy ** 2)
-                dir_x, dir_y = dx / length, dy / length
-                new_x = mid_x + dir_y * offset
-                new_y = mid_y - dir_x * offset
-                return (new_x, new_y)
+                if length == 0:
+                    length = 1
+                pos[node] = (mid_x + (dy / length) * offset, mid_y - (dx / length) * offset)
+    return pos
 
-            fig, axes = plt.subplots(1, len(graphs), figsize=(6 * len(graphs), 6))
-
-            # Store min and max coordinates for axis limit adjustments
-            all_x_values, all_y_values = [], []
-
-            for idx, (A, H, title) in enumerate(graphs):
-                graph = plot_graphs[idx]
-                graph.add_nodes_from(main_nodes)
-
-                # Plot A matrix connections
-                for i in range(d):
-                    for j in range(d):
-                        if abs(A[j, i]) > edge_threshold:
-                            color = 'red' if A[j, i] < 0 else 'green'
-                            curved = graph.has_edge(i + 1, j + 1) or graph.has_edge(j + 1, i + 1)
-                            graph.add_edge(i + 1, j + 1, color=color, curved=curved, style='solid')
-
-                # Plot H matrix exogenous variable connections
-                for i in range(d):
-                    for j in range(i + 1, d):  # Only check upper triangular since H is symmetric
-                        if abs(H[i, j]) >= v_eps:
-                            exog_node = f'U_{i + 1}{j + 1}'
-                            graph.add_node(exog_node)
-                            pos[exog_node] = get_exogenous_position(pos, (i + 1, j + 1))
-                            graph.add_edge(exog_node, i + 1, color='black', style='dotted')
-                            graph.add_edge(exog_node, j + 1, color='black', style='dotted')
-
-                # Collect coordinates for axis limits
-                x_values, y_values = zip(*pos.values())
-                all_x_values.extend(x_values)
-                all_y_values.extend(y_values)
-
-                # Plot the graph
-                plot_single_graph(graph, pos, title, axes[idx])
-
-            # Determine global axis limits
-            xmin, xmax = min(all_x_values) - 0.5, max(all_x_values) + 0.5
-            ymin, ymax = min(all_y_values) - 0.5, max(all_y_values) + 0.5
-
-            for ax in axes:
-                ax.set_xlim(xmin, xmax)
-                ax.set_ylim(ymin, ymax)
-
-            plt.tight_layout()
-            plt.show()
-        else:
-            # Adjustments for latent=False
-            graphs = [
-                (true_A, "True Causal Graph"),
-                (est_A_0, "Estimated Causal Graph by WOT"),
-                (est_A_30, "Estimated Causal Graph by APPEX"),
-                (est_A_min_nll, f"Estimated Causal Graph at Min NLL (Iteration {min_nll_index + 1})")
-            ]
-
-            # Initialize graphs for each scenario
-            plot_graphs = [nx.DiGraph() for _ in range(len(graphs))]
-            main_nodes = range(1, d + 1)
-            pos = nx.circular_layout(list(main_nodes))
-
-            fig, axes = plt.subplots(1, len(graphs), figsize=(6 * len(graphs), 6))
-
-            # Store min and max coordinates for axis limit adjustments
-            all_x_values, all_y_values = [], []
-
-            for idx, (A, title) in enumerate(graphs):
-                graph = plot_graphs[idx]
-                graph.add_nodes_from(main_nodes)
-
-                # Plot A matrix connections
-                for i in range(d):
-                    for j in range(d):
-                        if abs(A[j, i]) > edge_threshold:
-                            color = 'red' if A[j, i] < 0 else 'green'
-                            curved = graph.has_edge(i + 1, j + 1) or graph.has_edge(j + 1, i + 1)
-                            graph.add_edge(i + 1, j + 1, color=color, curved=curved, style='solid')
-
-                # Collect coordinates for axis limits
-                x_values, y_values = zip(*pos.values())
-                all_x_values.extend(x_values)
-                all_y_values.extend(y_values)
-
-                # Plot the graph
-                plot_single_graph(graph, pos, title, axes[idx])
-
-            # Determine global axis limits
-            xmin, xmax = min(all_x_values) - 0.5, max(all_x_values) + 0.5
-            ymin, ymax = min(all_y_values) - 0.5, max(all_y_values) + 0.5
-
-            for ax in axes:
-                ax.set_xlim(xmin, xmax)
-                ax.set_ylim(ymin, ymax)
-
-            plt.tight_layout()
-            plt.show()
-
-    return shd_wot, shd_appex, shd_min_nll, v_shd_wot, v_shd_appex, v_shd_min_nll
-
-
-def filter_redundant_edges(graph):
+def plot_single_graph(graph, pos, title, ax):
+    """
+    Draw the graph with the given layout and title.
+    """
     filtered_edges = {}
     for u, v, data in graph.edges(data=True):
         key = (u, v)
         if key not in filtered_edges:
             filtered_edges[key] = data
         else:
-            # Prioritize based on color, e.g., prioritize red over green
             if data.get('color') == 'red':
                 filtered_edges[key] = data
-            # If the existing edge is not red and the new one is, replace it
-            elif filtered_edges[key].get('color') != 'red' and data.get('color') == 'red':
-                filtered_edges[key] = data
-    return filtered_edges
-
-def plot_single_graph(graph, pos, title, ax):
-    # Filter for unique edges to avoid conflicts
-    filtered_edges = filter_redundant_edges(graph)
-
-    # Separate edges by type (straight, curved, solid, and dotted)
     straight_edges = [(u, v) for (u, v), data in filtered_edges.items() if not data.get('curved', False)]
     curved_edges = [(u, v) for (u, v), data in filtered_edges.items() if data.get('curved', False)]
     dotted_edges = [(u, v) for (u, v), data in filtered_edges.items() if data.get('style') == 'dotted']
-    solid_edges = [(u, v) for (u, v), data in filtered_edges.items() if data.get('style') == 'solid']
-
-    # Assign edge colors
-    edge_colors_straight = [filtered_edges[(u, v)]['color'] for u, v in straight_edges] if straight_edges else ['black']
-    edge_colors_curved = [filtered_edges[(u, v)]['color'] for u, v in curved_edges] if curved_edges else ['black']
-
-    # Handle self-loops by choosing one color (e.g., prioritize red self-loops)
-    self_loops = [(u, v) for u, v in filtered_edges if u == v]
-    if self_loops:
-        self_loops = [(u, v) for u, v in self_loops if filtered_edges[(u, v)].get('color') == 'red']
-
-    # Draw nodes
+    if straight_edges:
+        edge_colors = [filtered_edges[(u, v)]['color'] for (u, v) in straight_edges]
+    else:
+        edge_colors = ['black']
     nx.draw_networkx_nodes(graph, pos, node_color='lightblue', node_size=800, ax=ax)
     nx.draw_networkx_labels(graph, pos, font_size=12, font_color='black', ax=ax)
-
-    # Draw solid straight edges
     if straight_edges:
-        nx.draw_networkx_edges(
-            graph, pos, edgelist=straight_edges, edge_color=edge_colors_straight,
-            arrows=True, arrowstyle='-|>', arrowsize=8, min_target_margin=15, ax=ax
-        )
-
-    # Draw curved edges with arc style
+        nx.draw_networkx_edges(graph, pos, edgelist=straight_edges, edge_color=edge_colors,
+                               arrows=True, arrowstyle='-|>', arrowsize=8, ax=ax)
     if curved_edges:
-        nx.draw_networkx_edges(
-            graph, pos, edgelist=curved_edges, edge_color=edge_colors_curved,
-            arrows=True, arrowstyle='-|>', arrowsize=8, min_target_margin=15,
-            connectionstyle='arc3,rad=0.3', ax=ax
-        )
-
-    # Draw dotted edges for exogenous nodes
+        edge_colors_curve = [filtered_edges[(u, v)]['color'] for (u, v) in curved_edges]
+        nx.draw_networkx_edges(graph, pos, edgelist=curved_edges, edge_color=edge_colors_curve,
+                               arrows=True, arrowstyle='-|>', arrowsize=8,
+                               connectionstyle='arc3,rad=0.3', ax=ax)
     if dotted_edges:
-        nx.draw_networkx_edges(
-            graph, pos, edgelist=dotted_edges, edge_color='black',
-            arrows=True, arrowstyle='-|>', arrowsize=8, min_target_margin=15, ax=ax,
-            style=(0, (15, 10))  # Custom dash pattern for long dashes
-        )
-
-    ax.set_aspect('equal')
+        nx.draw_networkx_edges(graph, pos, edgelist=dotted_edges, edge_color='black',
+                               arrows=True, arrowstyle='-|>', arrowsize=8, ax=ax,
+                               style=(0, (15, 10)))
     ax.set_title(title)
+    ax.set_aspect('equal')
 
-def aggregate_results(results_data_global, ground_truth_A_list, ground_truth_D_list, nll=False):
-    """
-    Aggregate estimated A and D values from experiment replicates and compute MAEs and correlations.
-    Also compute the results for the iteration with the lowest average NLL across replicates.
-    :param results_data_global: Dictionary with replicate keys containing estimated 'A' and 'D' values per iteration.
-    :param ground_truth_A_list: List of ground truth 'A' matrices for each replicate.
-    :param ground_truth_D_list: List of ground truth 'D' matrices for each replicate.
-    :return: Aggregated MAEs, standard errors, correlations, and additional results for the minimal average NLL iteration.
-    """
-    num_iterations = 30  # Assuming there are 30 iterations
-
-    # Lists to store the results per iteration
-    A_mean_maes = []
-    D_mean_maes = []
-    A_mae_std_errs = []
-    D_mae_std_errs = []
-
-    # Lists to store correlations for each iteration
-    A_correlations = []
-    D_correlations = []
-    A_cor_std_errs = []
-    D_cor_std_errs = []
-
-    # Initialize a list to store average NLL per iteration across replicates
-    avg_nll_per_iteration = [0.0] * num_iterations
-
-    num_replicates = len(results_data_global.keys())
-
-    # First, compute MAEs, correlations, and NLLs per iteration across replicates
-    for iteration in range(num_iterations):
-        A_maes = []
-        D_maes = []
-        A_corrs = []
-        D_corrs = []
-        nlls_at_iteration = []
-
-        # Loop through the experiment replicates
-        for key in sorted(results_data_global.keys()):
-            results_data = results_data_global[key]
-            ground_truth_A = ground_truth_A_list[key - 1]
-            ground_truth_D = ground_truth_D_list[key - 1]
-
-            # Retrieve the estimated values for A and D at the current iteration
-            A = results_data['est A values'][iteration]
-            D = results_data['est D values'][iteration]
-
-            if 'nll values' in results_data:
-                # Retrieve the NLL value at the current iteration
-                nll_value = results_data['nll values'][iteration]
-                nll = True
-            else:
-                nll = False
-            if nll:
-                # Collect NLLs for averaging
-                nlls_at_iteration.append(nll_value)
-
-            # Compute MAE
-            A_maes.append(compute_mae(A, ground_truth_A))
-            D_maes.append(compute_mae(D, ground_truth_D))
-
-            # Compute Correlations
-            A_corr = calculate_correlation(A, ground_truth_A)
-            D_corr = calculate_correlation(D, ground_truth_D)
-            A_corrs.append(A_corr)
-            D_corrs.append(D_corr)
-
-        if nll:
-            # Compute the average NLL for the current iteration across all replicates
-            avg_nll = np.mean(nlls_at_iteration)
-            avg_nll_per_iteration[iteration] = avg_nll
-
-        # Compute the average MAE and correlations for the current iteration
-        avg_A_mae = np.mean(A_maes)
-        avg_D_mae = np.mean(D_maes)
-        A_mean_maes.append(avg_A_mae)
-        D_mean_maes.append(avg_D_mae)
-
-        # Compute standard error of MAEs
-        A_mae_std_errs.append(np.std(A_maes, ddof=1) / np.sqrt(num_replicates))
-        D_mae_std_errs.append(np.std(D_maes, ddof=1) / np.sqrt(num_replicates))
-
-        # Compute average correlations
-        avg_A_corr = np.mean(A_corrs)
-        avg_D_corr = np.mean(D_corrs)
-        A_correlations.append(avg_A_corr)
-        D_correlations.append(avg_D_corr)
-
-        # Compute standard error of correlations
-        A_cor_std_errs.append(np.std(A_corrs, ddof=1) / np.sqrt(num_replicates))
-        D_cor_std_errs.append(np.std(D_corrs, ddof=1) / np.sqrt(num_replicates))
-    if nll:
-        # Find the iteration with minimal average NLL
-        min_nll_index = np.argmin(avg_nll_per_iteration)
-
-        # Now compute results for iteration with minimal average NLL
-        A_maes_min_nll = []
-        D_maes_min_nll = []
-        A_corrs_min_nll = []
-        D_corrs_min_nll = []
-
-        # Loop through the experiment replicates
-        for key in sorted(results_data_global.keys()):
-            results_data = results_data_global[key]
-            ground_truth_A = ground_truth_A_list[key - 1]
-            ground_truth_D = ground_truth_D_list[key - 1]
-
-            # Retrieve the estimated values for A and D at the iteration with minimal average NLL
-            A = results_data['est A values'][min_nll_index]
-            D = results_data['est D values'][min_nll_index]
-
-            # Compute MAE
-            A_maes_min_nll.append(compute_mae(A, ground_truth_A))
-            D_maes_min_nll.append(compute_mae(D, ground_truth_D))
-
-            # Compute Correlations
-            A_corr = calculate_correlation(A, ground_truth_A)
-            D_corr = calculate_correlation(D, ground_truth_D)
-            A_corrs_min_nll.append(A_corr)
-            D_corrs_min_nll.append(D_corr)
-
-        # Compute average MAEs and correlations for the minimal average NLL iteration
-        avg_A_mae_min_nll = np.mean(A_maes_min_nll)
-        avg_D_mae_min_nll = np.mean(D_maes_min_nll)
-        A_mae_min_nll_std_err = np.std(A_maes_min_nll, ddof=1) / np.sqrt(num_replicates)
-        D_mae_min_nll_std_err = np.std(D_maes_min_nll, ddof=1) / np.sqrt(num_replicates)
-
-        avg_A_corr_min_nll = np.mean(A_corrs_min_nll)
-        avg_D_corr_min_nll = np.mean(D_corrs_min_nll)
-        A_cor_min_nll_std_err = np.std(A_corrs_min_nll, ddof=1) / np.sqrt(num_replicates)
-        D_cor_min_nll_std_err = np.std(D_corrs_min_nll, ddof=1) / np.sqrt(num_replicates)
-
-    if nll:
-        # Return the original outputs plus the new ones
-        return (A_mean_maes, A_mae_std_errs, D_mean_maes, D_mae_std_errs,
-                A_correlations, D_correlations, A_cor_std_errs, D_cor_std_errs,
-                avg_A_mae_min_nll, A_mae_min_nll_std_err, avg_D_mae_min_nll, D_mae_min_nll_std_err,
-                avg_A_corr_min_nll, avg_D_corr_min_nll, A_cor_min_nll_std_err, D_cor_min_nll_std_err,
-                avg_nll_per_iteration, min_nll_index)
-    else:
-        return (A_mean_maes, A_mae_std_errs, D_mean_maes, D_mae_std_errs,
-                A_correlations, D_correlations, A_cor_std_errs, D_cor_std_errs)
-
-
-def compute_mae(estimated, ground_truth):
-    """Compute Mean Absolute Percentage Error (MAE)"""
-    mae = np.mean(np.abs((estimated - ground_truth)))
-    return mae
-
-
-def calculate_correlation(estimated_matrix, ground_truth_matrix):
-    """Calculates the correlation between two matrices."""
-    # Flatten the matrices to 1D arrays
-    estimated_flat = estimated_matrix.flatten()
-    ground_truth_flat = ground_truth_matrix.flatten()
-    #  Calculate the Pearson correlation
-    correlation = np.corrcoef(estimated_flat, ground_truth_flat)[0, 1]
-    return correlation
-
-def plot_mae_and_correlation_vs_iterations(results_data_version1, ground_truth_A1_list, ground_truth_GGT1_list,
-                                           exp_title=None):
-    # Aggregate the estimated A and GGT values from version 1
-    if 'nll values' in results_data_version1[1]:
-        (
-            A_mean_maes_1, A_mae_std_errs_1, D_mean_maes_1, D_mae_std_errs_1,
-            A_correlations_1, D_correlations_1, A_cor_std_errs_1, D_cor_std_errs_1,
-            avg_A_mae_min_nll, A_mae_min_nll_std_err, avg_D_mae_min_nll, D_mae_min_nll_std_err,
-            avg_A_corr_min_nll, avg_D_corr_min_nll, A_cor_min_nll_std_err, D_cor_min_nll_std_err,
-            avg_nll_per_iteration, min_nll_index
-        ) = aggregate_results(
-            results_data_version1,
-            ground_truth_A1_list,
-            ground_truth_GGT1_list)
-    else:
-        (
-            A_mean_maes_1, A_mae_std_errs_1, D_mean_maes_1, D_mae_std_errs_1,
-            A_correlations_1, D_correlations_1, A_cor_std_errs_1, D_cor_std_errs_1
-        ) = aggregate_results(
-            results_data_version1,
-            ground_truth_A1_list,
-            ground_truth_GGT1_list)
-
-    iterations = np.arange(1, len(A_mean_maes_1) + 1)
-
-    # Plot the MAE for drift (A) and diffusion (GGT) with error bars
+def plot_MAEs(iterations, A_maes, H_maes, min_indices, exp_title = None):
     plt.figure(figsize=(10, 6))
-
-    # Plot MAE over iterations
-    plt.errorbar(iterations, A_mean_maes_1, yerr=A_mae_std_errs_1,
-                 label='MAE between estimated A and true A',
-                 color='black', linestyle='-', marker='o')
-    plt.errorbar(iterations, D_mean_maes_1, yerr=D_mae_std_errs_1,
-                 label='MAE between estimated H and true H',
-                 color='black', linestyle=':', marker='o',
-                 markerfacecolor='none', markeredgecolor='black')
-
-    # # Plot the MAE at minimal NLL iteration
-    # plt.axvline(x=min_nll_index + 1, color='red', linestyle='--', label='Min NLL Iteration')
-    # plt.scatter(min_nll_index + 1, avg_A_mae_min_nll, color='red', marker='x', s=100,
-    #             label='MAE at Min NLL (A)')
-    # plt.scatter(min_nll_index + 1, avg_D_mae_min_nll, color='red', marker='*', s=100,
-    #             label='MAE at Min NLL (H)')
-
-    # Print MAE values
-    print('WOT MAE in A:', A_mean_maes_1[0], '+-', A_mae_std_errs_1[0])
-    print('APPEX MAE in A:', A_mean_maes_1[-1], '+-', A_mae_std_errs_1[-1])
-    if 'nll values' in results_data_version1[1]:
-        print('Min NLL MAE in A:', avg_A_mae_min_nll, '+-', A_mae_min_nll_std_err)
-    print('WOT MAE in H:', D_mean_maes_1[0], '+-', D_mae_std_errs_1[0])
-    print('APPEX MAE in H:', D_mean_maes_1[-1], '+-', D_mae_std_errs_1[-1])
-    if 'nll values' in results_data_version1[1]:
-        print('Min NLL MAE in H:', avg_D_mae_min_nll, '+-', D_mae_min_nll_std_err)
-
-    # Customize the MAE plot
-    plt.xlabel('Iteration', fontsize=18)
-    plt.ylabel('MAE', fontsize=18)
-    plt.tick_params(axis='both', which='major', labelsize=12)
-    plt.legend(fontsize=12)
+    plt.plot(iterations, A_maes, label='MAE (A)', color='black', marker='o')
+    plt.plot(iterations, H_maes, label='MAE (H)', color='gray', marker='o')
+    for metric, color in zip(['nll', 'w2', 'w1', 'mmd'], ['red', 'blue', 'green', 'orange']):
+        plt.axvline(x=min_indices[metric] + 1, color=color, linestyle='--', label=f'Min {metric.upper()}')
+    plt.xlabel('Iteration')
+    plt.ylabel('MAE')
+    plt.title(exp_title if exp_title else 'MAE vs Iterations')
+    plt.legend()
     plt.grid(True)
-    if exp_title is not None:
-        plt.title(f'MAE of Estimated Parameters vs Iterations for {exp_title}')
-    else:
-        plt.title(f'MAE of Estimated Parameters vs Iterations')
     plt.tight_layout()
     plt.show()
 
-    # Create a second plot for correlations
+def plot_correlation(iterations, A_corrs, H_corrs, min_indices, exp_title = None):
+    # Plot Correlation vs Iterations:
     plt.figure(figsize=(10, 6))
-
-    # Plot correlation over iterations
-    plt.errorbar(iterations, A_correlations_1, yerr=A_cor_std_errs_1,
-                 label='Correlation between estimated A and true A',
-                 color='black', linestyle='-', marker='o', markerfacecolor='none', markeredgecolor='black')
-    plt.errorbar(iterations, D_correlations_1, yerr=D_cor_std_errs_1,
-                 label='Correlation between estimated H and true H',
-                 color='black', linestyle=':', marker='o', markerfacecolor='none', markeredgecolor='black')
-
-    # # Plot the correlation at minimal NLL iteration
-    # plt.axvline(x=min_nll_index + 1, color='red', linestyle='--', label='Min NLL Iteration')
-    # plt.scatter(min_nll_index + 1, avg_A_corr_min_nll, color='red', marker='x', s=100,
-    #             label='Correlation at Min NLL (A)')
-    # plt.scatter(min_nll_index + 1, avg_D_corr_min_nll, color='red', marker='*', s=100,
-    #             label='Correlation at Min NLL (H)')
-
-    # Print correlation values
-    print('WOT correlation in A:', A_correlations_1[0], '+-', A_cor_std_errs_1[0])
-    print('APPEX correlation in A:', A_correlations_1[-1], '+-', A_cor_std_errs_1[-1])
-    if 'nll values' in results_data_version1[1]:
-        print('Min NLL correlation in A:', avg_A_corr_min_nll, '+-', A_cor_min_nll_std_err)
-    print('WOT correlation in H:', D_correlations_1[0], '+-', D_cor_std_errs_1[0])
-    print('APPEX correlation in H:', D_correlations_1[-1], '+-', D_cor_std_errs_1[-1])
-    if 'nll values' in results_data_version1[1]:
-        print('Min NLL correlation in H:', avg_D_corr_min_nll, '+-', D_cor_min_nll_std_err)
-
-    # Customize the correlation plot
-    plt.xlabel('Iteration', fontsize=18)
-    plt.ylabel('Correlation', fontsize=18)
-    plt.tick_params(axis='both', which='major', labelsize=12)
-    plt.legend(fontsize=12)
+    plt.plot(iterations, A_corrs, label='Corr (A)', color='black', marker='o')
+    plt.plot(iterations, H_corrs, label='Corr (H)', color='gray', marker='o')
+    for metric, color in zip(['nll', 'w2', 'w1', 'mmd'], ['red', 'blue', 'green', 'orange']):
+        plt.axvline(x=min_indices[metric] + 1, color=color, linestyle='--', label=f'Min {metric.upper()}')
+    plt.xlabel('Iteration')
+    plt.ylabel('Correlation')
+    plt.title(exp_title if exp_title else 'Correlation vs Iterations')
+    plt.legend()
     plt.grid(True)
-    if exp_title is not None:
-        plt.title(f'Correlation of Estimated Parameters vs Iterations for {exp_title}')
-    else:
-        plt.title(f'Correlation of Estimated Parameters vs Iterations')
     plt.tight_layout()
     plt.show()
 
-    # Optionally, plot the average NLL over iterations
-    # plt.figure(figsize=(10, 6))
-    # plt.plot(iterations, avg_nll_per_iteration, label='Average NLL', color='blue', marker='o')
-    # plt.axvline(x=min_nll_index + 1, color='red', linestyle='--', label='Min NLL Iteration')
-    # plt.xlabel('Iteration', fontsize=18)
-    # plt.ylabel('Average NLL', fontsize=18)
-    # plt.tick_params(axis='both', which='major', labelsize=12)
-    # plt.legend(fontsize=12)
-    # plt.grid(True)
-    # if exp_title is not None:
-    #     plt.title(f'Average NLL over Iterations for {exp_title}')
-    # else:
-    #     plt.title(f'Average NLL over Iterations')
-    # plt.tight_layout()
-    # plt.show()
-
-
-
-def retrieve_true_A_D(exp_number, version):
-    if exp_number == 1:
-        if version == 1:
-            A = np.array([[-1]])
-            G = np.eye(1)
-        else:
-            A = np.array([[-10]])
-            G = math.sqrt(10) * np.eye(1)
-    elif exp_number == 2:
-        d = 2
-        if version == 1:
-            A = np.zeros((d, d))
-        else:
-            A = np.array([[0, 1], [-1, 0]])
-        G = np.eye(d)
-    elif exp_number == 3:
-        d = 2
-        if version == 1:
-            A = np.array([[1, 2], [1, 0]])
-        else:
-            A = np.array([[1 / 3, 4 / 3], [2 / 3, -1 / 3]])
-        G = np.array([[1, 2], [-1, -2]])
-
-    return A, np.matmul(G, G.T)
-
-
-def compute_mse(estimated, ground_truth):
-    """Compute Mean Squared Error (MSE)"""
-    mse = np.mean((estimated - ground_truth) ** 2)
-    return mse
-
-def interpret_causal_experiment(directory_path, edge_threshold=0.5, v_eps=1, show_stats=False, display_plot=False,
-                                latent=True):
+# ===============================
+# Replicate Diagnostic Plots
+# ===============================
+def plot_replicate_diagnostics(results_data, ground_truth_A, ground_truth_H, exp_title=None, verbose = False):
     """
-    This function processes replicate results to compute and display the Mean Squared Error (MSE) and
-    Structural Hamming Distance (SHD) between estimated and true A/D matrices at:
-    - Initial iteration (WOT)
-    - Iteration 30 (APPEX)
-    - Iteration with minimal NLL (APPEX with min NLL)
-
-    Parameters:
-    - directory_path: Path to the directory containing the replicate pickle files.
-    - edge_threshold: Threshold for determining edges in the estimated matrices (for A matrices).
-    - v_eps: Threshold for determining v-structures in the estimated matrices (for D matrices).
-    - show_stats: If True, prints detailed statistics.
-    - display_plot: If True, displays plots (functionality needs to be implemented).
-    - latent: If True, computes v-structure SHD.
-    """
-
-    N_values = []
-    A_mse_values_30 = []
-    D_mse_values_30 = []
-    A_mse_values_min_nll = []
-    D_mse_values_min_nll = []
-
-    # Lists to store filenames and extracted N values
-    files_with_N = []
-
-    # Iterate over all .pkl files in the specified directory
-    for filename in os.listdir(directory_path):
-        if filename.endswith('.pkl'):
-            # Extract N from the filename using regex
-            match = re.search(r'_N-(\d+)', filename)
-            if match:
-                N = int(match.group(1))
-                files_with_N.append((N, filename))
-
-    # Sort files based on extracted N values
-    files_with_N.sort()
-    shd_wot_list = []
-    shd_appex_list = []
-    shd_min_nll_list = []
-    if latent:
-        v_shd_wot_list = []
-        v_shd_appex_list = []
-        v_shd_min_nll_list = []
-
-    # Process files in order of N
-    for N, filename in files_with_N:
-        file_path = os.path.join(directory_path, filename)
-
-        # Load the replicate data
-        with open(file_path, 'rb') as f:
-            results_data = pickle.load(f)
-        print(file_path)
-        # Extract true A, true D, est A values, est D values
-        true_A = results_data['true_A']
-        true_D = results_data['true_D']
-        est_A_values = results_data['est A values']
-        est_D_values = results_data['est D values']
-        nll_values = results_data['nll values']
-
-        # Get the estimated A and D at iteration 1 (index 0) and iteration 30 (index 29)
-        est_A_0 = est_A_values[0]
-        est_A_30 = est_A_values[29]
-        est_D_0 = est_D_values[0]
-        est_D_30 = est_D_values[29]
-
-        # Find the iteration with minimal NLL
-        min_nll_index = np.argmin(nll_values)
-        est_A_min_nll = est_A_values[min_nll_index]
-        est_D_min_nll = est_D_values[min_nll_index]
-
-        if show_stats:
-
-            print('True D:', true_D)
-            print('Initial D:', results_data['initial D'])
-            print('True A:', true_A)
-            print('Estimated A by WOT (Iteration 1):', est_A_0)
-            print('Estimated A after 30 iterations:', est_A_30)
-            print(f'Estimated A at min NLL (Iteration {min_nll_index + 1}):', est_A_min_nll)
-            print('Estimated D by WOT (Iteration 1):', est_D_0)
-            print('Estimated D after 30 iterations:', est_D_30)
-            print(f'Estimated D at min NLL (Iteration {min_nll_index + 1}):', est_D_min_nll)
-            plot_results_for_replicate(results_data, true_A, true_D)
-
-        if edge_threshold is not None:
-            # Compute SHD and plot causal graphs
-            shd_wot, shd_appex, shd_min_nll, v_shd_wot, v_shd_appex, v_shd_min_nll = plot_causal_graphs(
-                true_A, est_A_0, est_A_30, est_A_min_nll,
-                true_D, est_D_0, est_D_30, est_D_min_nll,
-                edge_threshold=edge_threshold,
-                v_eps=v_eps,
-                display_plot=display_plot, latent=latent, min_nll_index=min_nll_index)
-            shd_wot_list.append(shd_wot)
-            shd_appex_list.append(shd_appex)
-            shd_min_nll_list.append(shd_min_nll)
-            if latent:
-                v_shd_wot_list.append(v_shd_wot)
-                v_shd_appex_list.append(v_shd_appex)
-                v_shd_min_nll_list.append(v_shd_min_nll)
-
-        # Compute the MSE for A and D at iteration 30 and at min NLL iteration
-        A_mse_30 = compute_mse(est_A_30, true_A)
-        D_mse_30 = compute_mse(est_D_30, true_D)
-        A_mse_min_nll = compute_mse(est_A_min_nll, true_A)
-        D_mse_min_nll = compute_mse(est_D_min_nll, true_D)
-
-        # Append the results
-        N_values.append(N)
-        A_mse_values_30.append(A_mse_30)
-        D_mse_values_30.append(D_mse_30)
-        A_mse_values_min_nll.append(A_mse_min_nll)
-        D_mse_values_min_nll.append(D_mse_min_nll)
-
-    # Calculate mean and standard error for SHD WOT
-    mean_shd_wot = np.mean(shd_wot_list)
-    std_error_shd_wot = np.std(shd_wot_list, ddof=1) / np.sqrt(len(shd_wot_list))
-
-    # Calculate mean and standard error for SHD APPEX
-    mean_shd_appex = np.mean(shd_appex_list)
-    std_error_shd_appex = np.std(shd_appex_list, ddof=1) / np.sqrt(len(shd_appex_list))
-
-    # Calculate mean and standard error for SHD APPEX at min NLL
-    mean_shd_min_nll = np.mean(shd_min_nll_list)
-    std_error_shd_min_nll = np.std(shd_min_nll_list, ddof=1) / np.sqrt(len(shd_min_nll_list))
-
-    # Print the results
-    print("\nSimple SHD Results:")
-    print("Mean SHD WOT:", mean_shd_wot, "±", std_error_shd_wot)
-    print("Mean SHD APPEX:", mean_shd_appex, "±", std_error_shd_appex)
-    print("Mean SHD APPEX at min NLL:", mean_shd_min_nll, "±", std_error_shd_min_nll)
-
-    if latent:
-        # Calculate mean and standard error for v-structure SHD WOT
-        v_mean_shd_wot = np.mean(v_shd_wot_list)
-        v_std_error_shd_wot = np.std(v_shd_wot_list, ddof=1) / np.sqrt(len(v_shd_wot_list))
-
-        # Calculate mean and standard error for v-structure SHD APPEX
-        v_mean_shd_appex = np.mean(v_shd_appex_list)
-        v_std_error_shd_appex = np.std(v_shd_appex_list, ddof=1) / np.sqrt(len(v_shd_appex_list))
-
-        # Calculate mean and standard error for v-structure SHD APPEX at min NLL
-        v_mean_shd_min_nll = np.mean(v_shd_min_nll_list)
-        v_std_error_shd_min_nll = np.std(v_shd_min_nll_list, ddof=1) / np.sqrt(len(v_shd_min_nll_list))
-
-        # Print the results
-        print("\nV-Structure SHD Results:")
-        print("Mean v-structure SHD WOT:", v_mean_shd_wot, "±", v_std_error_shd_wot)
-        print("Mean v-structure SHD APPEX:", v_mean_shd_appex, "±", v_std_error_shd_appex)
-        print("Mean v-structure SHD APPEX at min NLL:", v_mean_shd_min_nll, "±", v_std_error_shd_min_nll)
-
-
-def plot_results_for_replicate(results_data, ground_truth_A, ground_truth_D, exp_title=None):
-    """
-    Plots the MAE, correlation, and NLL over iterations for a single replicate.
-    Highlights the iteration with the minimal NLL.
-
-    :param results_data: Dictionary containing the results for a single replicate.
-    :param ground_truth_A: Ground truth A matrix for the replicate.
-    :param ground_truth_D: Ground truth D matrix for the replicate.
-    :param exp_title: Optional title for the plots.
+    For a single replicate, plot the evolution of MAE, correlation, and convergence metrics (NLL, W2, W1, MMD)
+    versus iterations. Vertical lines indicate the iterations where these metrics are minimized.
+    Also print a summary of the key metrics.
     """
     num_iterations = len(results_data['est A values'])
     iterations = np.arange(1, num_iterations + 1)
+    est_A_vals = results_data['est A values']
+    est_H_vals = results_data['est H values']
+    conv_scores = results_data['convergence scores']
 
-    # Retrieve estimated A, D, and NLL values over iterations
-    est_A_values = results_data['est A values']
-    est_D_values = results_data['est D values']
-    nll_values = results_data['nll values']
+    A_maes = [compute_mae(est_A_vals[i], ground_truth_A) for i in range(num_iterations)]
+    H_maes = [compute_mae(est_H_vals[i], ground_truth_H) for i in range(num_iterations)]
+    A_corrs = [calculate_correlation(est_A_vals[i], ground_truth_A) for i in range(num_iterations)]
+    H_corrs = [calculate_correlation(est_H_vals[i], ground_truth_H) for i in range(num_iterations)]
 
-    # Initialize lists to store MAEs and correlations
-    A_maes = []
-    D_maes = []
-    A_corrs = []
-    D_corrs = []
+    min_indices = get_min_indices(conv_scores)
 
-    # Compute MAEs and correlations at each iteration
-    for iteration in range(num_iterations):
-        A_est = est_A_values[iteration]
-        D_est = est_D_values[iteration]
+    plot_MAEs(iterations, A_maes, H_maes, min_indices, exp_title=exp_title)
+    plot_correlation(iterations, A_corrs, H_corrs, min_indices, exp_title=exp_title)
 
-        # Compute MAE
-        A_mae = compute_mae(A_est, ground_truth_A)
-        D_mae = compute_mae(D_est, ground_truth_D)
-        A_maes.append(A_mae)
-        D_maes.append(D_mae)
+    plot_normalized_convergence(results_data, exp_title)
 
-        # Compute correlation
-        A_corr = calculate_correlation(A_est, ground_truth_A)
-        D_corr = calculate_correlation(D_est, ground_truth_D)
-        A_corrs.append(A_corr)
-        D_corrs.append(D_corr)
+    if verbose:
+        print("Iteration metrics summary:")
+        print("Initial MAE (A):", A_maes[0])
+        print("Final MAE (A):", A_maes[-1])
+        print("Initial MAE (H):", H_maes[0])
+        print("Final MAE (H):", H_maes[-1])
+        print("Initial Corr (A):", A_corrs[0])
+        print("Final Corr (A):", A_corrs[-1])
+        print("Initial Corr (H):", H_corrs[0])
+        print("Final Corr (H):", H_corrs[-1])
+        for metric in ['nll', 'w2', 'w1', 'mmd']:
+            print(f"Min {metric.upper()} MAE (A) at iteration {min_indices[metric] + 1}:", A_maes[min_indices[metric]])
+            print(f"Min {metric.upper()} MAE (H) at iteration {min_indices[metric] + 1}:", H_maes[min_indices[metric]])
+            print(f"Min {metric.upper()} Corr (A) at iteration {min_indices[metric] + 1}:", A_corrs[min_indices[metric]])
+            print(f"Min {metric.upper()} Corr (H) at iteration {min_indices[metric] + 1}:", H_corrs[min_indices[metric]])
 
-    # Find the iteration with minimal NLL
-    min_nll_index = np.argmin(nll_values)
+def plot_normalized_convergence(results_data, exp_title=None):
+    """
+    Generate a single normalized convergence plot with NLL, W2, W1, and MMD together.
+    """
+    num_iterations = len(results_data['convergence scores'])
+    iterations = np.arange(1, num_iterations + 1)
+    conv_scores = results_data['convergence scores']
 
-    # Plot MAE over iterations
     plt.figure(figsize=(10, 6))
-    plt.plot(iterations, A_maes, label='MAE between estimated A and true A',
-             color='black', linestyle='-', marker='o')
-    plt.plot(iterations, D_maes, label='MAE between estimated H and true H',
-             color='black', linestyle=':', marker='o', markerfacecolor='none', markeredgecolor='black')
-
-    # Highlight the minimal NLL iteration
-    plt.axvline(x=min_nll_index + 1, color='red', linestyle='--', label='Min NLL Iteration')
-    plt.scatter(min_nll_index + 1, A_maes[min_nll_index], color='red', marker='x', s=100,
-                label='MAE at Min NLL (A)')
-    plt.scatter(min_nll_index + 1, D_maes[min_nll_index], color='red', marker='*', s=100,
-                label='MAE at Min NLL (H)')
-
-    # Customize the MAE plot
-    plt.xlabel('Iteration', fontsize=18)
-    plt.ylabel('MAE', fontsize=18)
-    plt.tick_params(axis='both', which='major', labelsize=12)
-    plt.legend(fontsize=12)
+    for metric, color in zip(['nll', 'w2', 'w1', 'mmd'], ['red', 'blue', 'green', 'orange']):
+        metric_vals = np.array([conv_scores[i][metric] for i in range(num_iterations)])
+        metric_min, metric_max = np.min(metric_vals), np.max(metric_vals)
+        normalized_vals = (metric_vals - metric_min) / (metric_max - metric_min)
+        min_index = np.argmin(metric_vals)
+        plt.plot(iterations, normalized_vals, label=f'Normalized {metric.upper()}', color=color, marker='o')
+        plt.axvline(x=min_index + 1, color=color, linestyle='--', label=f'Min {metric.upper()}')
+    plt.xlabel('Iteration')
+    plt.ylabel('Normalized Convergence Score')
+    plt.title(exp_title if exp_title else 'Normalized Convergence Metrics vs Iterations')
+    plt.legend()
     plt.grid(True)
-    if exp_title is not None:
-        plt.title(f'MAE of Estimated Parameters vs Iterations for {exp_title}')
-    else:
-        plt.title(f'MAE of Estimated Parameters vs Iterations')
     plt.tight_layout()
     plt.show()
 
-    # Plot correlation over iterations
-    plt.figure(figsize=(10, 6))
-    plt.plot(iterations, A_corrs, label='Correlation between estimated A and true A',
-             color='black', linestyle='-', marker='o', markerfacecolor='none', markeredgecolor='black')
-    plt.plot(iterations, D_corrs, label='Correlation between estimated H and true H',
-             color='black', linestyle=':', marker='o', markerfacecolor='none', markeredgecolor='black')
+# ===============================
+# Aggregate Selection Metrics
+# ===============================
+def aggregate_selection_metrics(replicates, edge_threshold=0.5, v_threshold=1, verbose = False):
+    """
+    For each replicate, extract the following metrics (using the replicate's ground truth):
+      - WOT: metrics at iteration 0.
+      - APPEX: metrics at the last iteration.
+      - Best iteration by nll, w1, w2, and mmd (each determined per replicate).
+    For each replicate and each selection, compute:
+      * MAE for A and H
+      * Pearson correlation for A and H
+      * Direct SHD for A and latent SHD for H (using v_threshold for H)
+    Then, aggregate across replicates by computing the mean and standard error for each metric.
+    Returns a dictionary with keys for each selection ("WOT", "APPEX", "min_nll", "min_w1", "min_w2")
+    mapping to dictionaries of aggregated means and standard errors.
+    """
+    selections = {
+        "WOT": {"MAE_A": [], "MAE_H": [], "Corr_A": [], "Corr_H": [], "SHD_A": [], "vSHD_H": []},
+        "APPEX": {"MAE_A": [], "MAE_H": [], "Corr_A": [], "Corr_H": [], "SHD_A": [], "vSHD_H": []},
+        "min_nll": {"MAE_A": [], "MAE_H": [], "Corr_A": [], "Corr_H": [], "SHD_A": [], "vSHD_H": []},
+        "min_w1": {"MAE_A": [], "MAE_H": [], "Corr_A": [], "Corr_H": [], "SHD_A": [], "vSHD_H": []},
+        "min_w2": {"MAE_A": [], "MAE_H": [], "Corr_A": [], "Corr_H": [], "SHD_A": [], "vSHD_H": []},
+        "min_mmd": {"MAE_A": [], "MAE_H": [], "Corr_A": [], "Corr_H": [], "SHD_A": [], "vSHD_H": []}
+    }
 
-    # Highlight the minimal NLL iteration
-    plt.axvline(x=min_nll_index + 1, color='red', linestyle='--', label='Min NLL Iteration')
-    plt.scatter(min_nll_index + 1, A_corrs[min_nll_index], color='red', marker='x', s=100,
-                label='Correlation at Min NLL (A)')
-    plt.scatter(min_nll_index + 1, D_corrs[min_nll_index], color='red', marker='*', s=100,
-                label='Correlation at Min NLL (H)')
+    for key in sorted(replicates.keys()):
+        rep_data = replicates[key]
+        true_A = rep_data['true_A']
+        true_H = rep_data['true_H']
+        if verbose:
+            print(f"\n--- Replicate {key} ---")
+            print("Ground Truth A:")
+            print(true_A)
+            print("Ground Truth H:")
+            print(true_H)
+        num_iterations = len(rep_data['est A values'])
 
-    # Customize the correlation plot
-    plt.xlabel('Iteration', fontsize=18)
-    plt.ylabel('Correlation', fontsize=18)
-    plt.tick_params(axis='both', which='major', labelsize=12)
-    plt.legend(fontsize=12)
-    plt.grid(True)
-    if exp_title is not None:
-        plt.title(f'Correlation of Estimated Parameters vs Iterations for {exp_title}')
-    else:
-        plt.title(f'Correlation of Estimated Parameters vs Iterations')
+        # WOT: iteration 0
+        idx_wot = 0
+        A_wot = rep_data['est A values'][idx_wot]
+        H_wot = rep_data['est H values'][idx_wot]
+        selections["WOT"]["MAE_A"].append(compute_mae(A_wot, true_A))
+        selections["WOT"]["MAE_H"].append(compute_mae(H_wot, true_H))
+        selections["WOT"]["Corr_A"].append(calculate_correlation(A_wot, true_A))
+        selections["WOT"]["Corr_H"].append(calculate_correlation(H_wot, true_H))
+        wot_shd = compute_shd(A_wot, true_A, edge_threshold)
+        wot_v_shd = compute_v_structure_shd(true_H, H_wot, v_threshold)
+        selections["WOT"]["SHD_A"].append(wot_shd)
+        selections["WOT"]["vSHD_H"].append(wot_v_shd)
+
+        # APPEX: last iteration
+        idx_appex = num_iterations - 1
+        A_appex = rep_data['est A values'][idx_appex]
+        H_appex = rep_data['est H values'][idx_appex]
+        selections["APPEX"]["MAE_A"].append(compute_mae(A_appex, true_A))
+        selections["APPEX"]["MAE_H"].append(compute_mae(H_appex, true_H))
+        selections["APPEX"]["Corr_A"].append(calculate_correlation(A_appex, true_A))
+        selections["APPEX"]["Corr_H"].append(calculate_correlation(H_appex, true_H))
+        selections["APPEX"]["SHD_A"].append(compute_shd(A_appex, true_A, edge_threshold))
+        selections["APPEX"]["vSHD_H"].append(compute_v_structure_shd(true_H, H_appex, v_threshold))
+
+        # Best iterations per replicate:
+        conv_scores = rep_data['convergence scores']
+        idx_min_nll = int(np.argmin([score['nll'] for score in conv_scores]))
+        idx_min_w1 = int(np.argmin([score['w1'] for score in conv_scores]))
+        idx_min_w2 = int(np.argmin([score['w2'] for score in conv_scores]))
+        idx_min_mmd = int(np.argmin([score['mmd'] for score in conv_scores]))
+
+        A_min_nll = rep_data['est A values'][idx_min_nll]
+        H_min_nll = rep_data['est H values'][idx_min_nll]
+        selections["min_nll"]["MAE_A"].append(compute_mae(A_min_nll, true_A))
+        selections["min_nll"]["MAE_H"].append(compute_mae(H_min_nll, true_H))
+        selections["min_nll"]["Corr_A"].append(calculate_correlation(A_min_nll, true_A))
+        selections["min_nll"]["Corr_H"].append(calculate_correlation(H_min_nll, true_H))
+        min_nll_shd = compute_shd(A_min_nll, true_A, edge_threshold)
+        min_nll_v_shd = compute_v_structure_shd(true_H, H_min_nll, v_threshold)
+        selections["min_nll"]["SHD_A"].append(compute_shd(A_min_nll, true_A, edge_threshold))
+        selections["min_nll"]["vSHD_H"].append(compute_v_structure_shd(true_H, H_min_nll, v_threshold))
+
+        A_min_w1 = rep_data['est A values'][idx_min_w1]
+        H_min_w1 = rep_data['est H values'][idx_min_w1]
+        selections["min_w1"]["MAE_A"].append(compute_mae(A_min_w1, true_A))
+        selections["min_w1"]["MAE_H"].append(compute_mae(H_min_w1, true_H))
+        selections["min_w1"]["Corr_A"].append(calculate_correlation(A_min_w1, true_A))
+        selections["min_w1"]["Corr_H"].append(calculate_correlation(H_min_w1, true_H))
+        min_w1_shd = compute_shd(A_min_w1, true_A, edge_threshold)
+        min_w1_v_shd = compute_v_structure_shd(true_H, H_min_w1, v_threshold)
+        selections["min_w1"]["SHD_A"].append(compute_shd(A_min_w1, true_A, edge_threshold))
+        selections["min_w1"]["vSHD_H"].append(compute_v_structure_shd(true_H, H_min_w1, v_threshold))
+
+
+        A_min_w2 = rep_data['est A values'][idx_min_w2]
+        H_min_w2 = rep_data['est H values'][idx_min_w2]
+        selections["min_w2"]["MAE_A"].append(compute_mae(A_min_w2, true_A))
+        selections["min_w2"]["MAE_H"].append(compute_mae(H_min_w2, true_H))
+        selections["min_w2"]["Corr_A"].append(calculate_correlation(A_min_w2, true_A))
+        selections["min_w2"]["Corr_H"].append(calculate_correlation(H_min_w2, true_H))
+        min_w2_shd = compute_shd(A_min_w2, true_A, edge_threshold)
+        min_w2_v_shd = compute_v_structure_shd(true_H, H_min_w2, v_threshold)
+        selections["min_w2"]["SHD_A"].append(compute_shd(A_min_w2, true_A, edge_threshold))
+        selections["min_w2"]["vSHD_H"].append(compute_v_structure_shd(true_H, H_min_w2, v_threshold))
+
+        A_min_mmd = rep_data['est A values'][idx_min_mmd]
+        H_min_mmd = rep_data['est H values'][idx_min_mmd]
+        selections["min_mmd"]["MAE_A"].append(compute_mae(A_min_mmd, true_A))
+        selections["min_mmd"]["MAE_H"].append(compute_mae(H_min_mmd, true_H))
+        selections["min_mmd"]["Corr_A"].append(calculate_correlation(A_min_mmd, true_A))
+        selections["min_mmd"]["Corr_H"].append(calculate_correlation(H_min_mmd, true_H))
+        min_mmd_shd = compute_shd(A_min_mmd, true_A, edge_threshold)
+        min_mmd_v_shd = compute_v_structure_shd(true_H, H_min_mmd, v_threshold)
+        selections["min_mmd"]["SHD_A"].append(compute_shd(A_min_mmd, true_A, edge_threshold))
+        selections["min_mmd"]["vSHD_H"].append(compute_v_structure_shd(true_H, H_min_mmd, v_threshold))
+
+    aggregated = {}
+    for sel in selections:
+        aggregated[sel] = {}
+        for metric in selections[sel]:
+            values = np.array(selections[sel][metric])
+            aggregated[sel][metric + '_mean'] = np.mean(values)
+            aggregated[sel][metric + '_se'] = np.std(values, ddof=1) / np.sqrt(len(values))
+    return aggregated
+
+# ===============================
+# Causal Graph Plotting (2x3 Display)
+# ===============================
+def plot_six_causal_graphs(results_data, true_A, true_H, v_threshold=1, edge_threshold=0.5):
+    """
+    Display a 2 x 3 grid of causal graphs.
+    Top row: True graph, Iteration 1 (WOT), Last iteration (APPEX).
+    Bottom row: Estimated graphs at iterations with minimum nll, minimum w2, minimum w1, and minimum_mmd.
+    """
+    est_A_vals = results_data['est A values']
+    est_H_vals = results_data['est H values']
+    conv_scores = results_data['convergence scores']
+    min_indices = get_min_indices(conv_scores)
+
+    g_true = construct_causal_graph(true_A, true_H, v_threshold=v_threshold, edge_threshold=edge_threshold)
+    g_wot = construct_causal_graph(est_A_vals[0], est_H_vals[0], v_threshold=v_threshold, edge_threshold=edge_threshold)
+    # g_appex = construct_causal_graph(est_A_vals[-1], est_H_vals[-1], v_threshold=v_threshold, edge_threshold=edge_threshold)
+    g_mmd = construct_causal_graph(est_A_vals[min_indices['mmd']], est_H_vals[min_indices['mmd']], v_threshold=v_threshold, edge_threshold=edge_threshold)
+    g_min_nll = construct_causal_graph(est_A_vals[min_indices['nll']], est_H_vals[min_indices['nll']], v_threshold=v_threshold, edge_threshold=edge_threshold)
+    g_min_w2 = construct_causal_graph(est_A_vals[min_indices['w2']], est_H_vals[min_indices['w2']], v_threshold=v_threshold, edge_threshold=edge_threshold)
+    g_min_w1 = construct_causal_graph(est_A_vals[min_indices['w1']], est_H_vals[min_indices['w1']], v_threshold=v_threshold, edge_threshold=edge_threshold)
+
+    pos_true = compute_layout(g_true)
+    pos_wot = compute_layout(g_wot)
+    # pos_appex = compute_layout(g_appex)
+    pos_mmd = compute_layout(g_mmd)
+    pos_min_nll = compute_layout(g_min_nll)
+    pos_min_w2 = compute_layout(g_min_w2)
+    pos_min_w1 = compute_layout(g_min_w1)
+
+
+    fig, axes = plt.subplots(2, 3, figsize=(24, 12))
+    # Top row:
+    plot_single_graph(g_true, pos_true, "True Causal Graph", axes[0, 0])
+    plot_single_graph(g_wot, pos_wot, "Iteration 1 (WOT)", axes[0, 1])
+    # plot_single_graph(g_appex, pos_appex, "Last Iteration (APPEX)", axes[0, 2])
+    plot_single_graph(g_mmd, pos_mmd, "Best (Min MMD)", axes[0, 2])
+    # Bottom row:
+    plot_single_graph(g_min_nll, pos_min_nll, "Best (Min NLL)", axes[1, 0])
+    plot_single_graph(g_min_w2, pos_min_w2, "Best (Min W2)", axes[1, 1])
+    plot_single_graph(g_min_w1, pos_min_w1, "Best (Min W1)", axes[1, 2])
     plt.tight_layout()
     plt.show()
 
-    # Plot NLL over iterations
-    plt.figure(figsize=(10, 6))
-    plt.plot(iterations, nll_values, label='NLL', color='blue', marker='o')
-    plt.axvline(x=min_nll_index + 1, color='red', linestyle='--', label='Min NLL Iteration')
-    plt.xlabel('Iteration', fontsize=18)
-    plt.ylabel('NLL', fontsize=18)
-    plt.tick_params(axis='both', which='major', labelsize=12)
-    plt.legend(fontsize=12)
-    plt.grid(True)
-    if exp_title is not None:
-        plt.title(f'NLL over Iterations for {exp_title}')
-    else:
-        plt.title(f'NLL over Iterations')
-    plt.tight_layout()
-    plt.show()
+# ===============================
+# Replicate File Loading
+# ===============================
+def load_replicate_files(directory):
+    replicates = {}
+    for idx, filename in enumerate(sorted(os.listdir(directory))):
+        if filename.endswith('.pkl'):
+            file_path = os.path.join(directory, filename)
+            with open(file_path, 'rb') as f:
+                replicates[idx] = pickle.load(f)
+    return replicates
 
-    # Print MAE and correlation at initial, final, and min NLL iterations
-    print('WOT MAE in A:', A_maes[0])
-    print('APPEX (iteration 30) MAE in A:', A_maes[-1])
-    print(f'APPEX (Min NLL) MAE in A at iteration {min_nll_index}:', A_maes[min_nll_index])
-    print('WOT MAE in H:', D_maes[0])
-    print('APPEX (iteration 30) MAE in H:', D_maes[-1])
-    print(f'APPEX (Min NLL) MAE in D at iteration {min_nll_index}:', D_maes[min_nll_index])
-    print('WOT Correlation in A:', A_corrs[0])
-    print('APPEX (iteration 30) Correlation in A:', A_corrs[-1])
-    print(f'APPEX (Min NLL)  Correlation in A:', A_corrs[min_nll_index])
-    print('WOT Correlation in H:', D_corrs[0])
-    print('APPEX (iteration 30) correlation in H:', D_corrs[-1])
-    print(f'APPEX (Min NLL) Correlation in H:', D_corrs[min_nll_index])
+# ===============================
+# Main Interpretation Function
+# ===============================
+def interpret_experiment_directory(directory, exp_title=None, display_plots=True, no_causal_plots=False, edge_threshold=0.5, v_eps=1):
+    replicates = load_replicate_files(directory)
+    num_reps = len(replicates)
+    print(f"Found {num_reps} replicates in directory '{directory}'")
+    for rep, results_data in replicates.items():
+        true_A = results_data['true_A']
+        true_H = results_data['true_H']
+        if display_plots:
+            plot_replicate_diagnostics(results_data, true_A, true_H,
+                                       exp_title=f"{exp_title} - Replicate {rep}")
+            if not no_causal_plots:
+                plot_six_causal_graphs(results_data, true_A, true_H, v_threshold=v_eps, edge_threshold=edge_threshold)
 
+    # Build ground-truth lists across replicates
+    gt_As = [replicates[key]['true_A'] for key in sorted(replicates.keys())]
+    gt_Hs = [replicates[key]['true_H'] for key in sorted(replicates.keys())]
 
+    # Aggregate selection metrics across replicates with separate v-threshold
+    agg_sel = aggregate_selection_metrics(replicates, edge_threshold=edge_threshold, v_threshold=v_eps)  # v_eps is now our v_threshold
 
-def plot_exp_results(exp_number, version=None, d=None, num_reps=2, N=500, seed=1, plot_individual_results=True):
-    print('Dimension:', d)
-    results_data_global = {}
-    ground_truth_A_list = []
-    ground_truth_D_list = []
-    for i in range(1, num_reps + 1):
-        if exp_number != "random":
-            filename = f'Results_experiment_{exp_number}_seed-{seed}/version-{version}_N-{N}_replicate-{i}.pkl'
-        else:
-            filename = f'Results_experiment_{exp_number}_{d}_seed-{seed}/replicate-{i}_N-{N}.pkl'
-        with open(filename, 'rb') as f:
-            results_data = pickle.load(f)
-        if exp_number == 'random':
-            ground_truth_A_list.append(results_data['true_A'])
-            ground_truth_D_list.append(results_data['true_D'])
-
-        results_data_global[i] = results_data
-        if plot_individual_results:
-            plot_results_for_replicate(results_data, results_data['true_A'], results_data['true_D'])
+    print("\nAggregated Metrics (across replicates):")
+    for sel in ["WOT", "APPEX", "min_nll", "min_w1", "min_w2", "min_mmd"]:
+        print(f"\nSelection: {sel}")
+        # print("  Mean MAE for A: {:.4f} ± {:.4f}".format(agg_sel[sel]['MAE_A_mean'], agg_sel[sel]['MAE_A_se']))
+        # print("  Mean MAE for H: {:.4f} ± {:.4f}".format(agg_sel[sel]['MAE_H_mean'], agg_sel[sel]['MAE_H_se']))
+        # print("  Mean Corr for A: {:.4f} ± {:.4f}".format(agg_sel[sel]['Corr_A_mean'], agg_sel[sel]['Corr_A_se']))
+        # print("  Mean Corr for H: {:.4f} ± {:.4f}".format(agg_sel[sel]['Corr_H_mean'], agg_sel[sel]['Corr_H_se']))
+        print("  Mean Direct SHD for A: {:.4f} ± {:.4f}".format(agg_sel[sel]['SHD_A_mean'], agg_sel[sel]['SHD_A_se']))
+        print("  Mean Latent SHD for H: {:.4f} ± {:.4f}".format(agg_sel[sel]['vSHD_H_mean'], agg_sel[sel]['vSHD_H_se']))
 
 
-    if exp_number != 'random':
-        ground_truth_A1, ground_truth_GGT1 = retrieve_true_A_D(exp_number, version)
-        ground_truth_A_list = [ground_truth_A1] * num_reps
-        ground_truth_D_list = [ground_truth_GGT1] * num_reps
+# ===============================
+# Main Section
+# ===============================
+if __name__ == '__main__':
+    # directory = "old_Results_experiment_latent_confounder_random_3_sparsity_0.25_seed-69"
+    #
+    # # Call the interpretation function on the directory.
+    # interpret_experiment_directory(directory,
+    #                                exp_title="Latent Confounder Random Experiment (d=3, p=0.25)",
+    #                                display_plots=True)
+    #
+    directory = "Results_experiment_latent_confounder_random_3_sparsity_0.25_seed-1"
+    # directory = 'Results_experiment_random_3_seed-69'
+    #
+    # Call the interpretation function on the directory.
+    interpret_experiment_directory(directory,
+                                   exp_title="Latent Confounder Random Experiment (d=5, p=0.25)",
+                                   display_plots=False, v_eps=1, edge_threshold=0.5)
 
-    if exp_number == 'random':
-        plot_mae_and_correlation_vs_iterations(results_data_global, ground_truth_A_list, ground_truth_D_list,
-                                               exp_title=f'random SDEs of dimension {d}')
-    else:
-        plot_mae_and_correlation_vs_iterations(results_data_global, ground_truth_A_list, ground_truth_D_list,
-                                               exp_title=f'SDE {version} from example {exp_number}')
 
+    interpret_experiment_directory(directory,
+                                   exp_title="Latent Confounder Random Experiment (d=5, p=0.25)",
+                                   display_plots=True, v_eps=0.5, edge_threshold=0.5)
+    # directory = 'Results_experiment_1_seed-935'
+    # interpret_experiment_directory(directory, exp_title="Experiment 1", display_plots=True, no_causal_plots=True)
+    #
+    # directory = 'Results_experiment_2_seed-393'
+    # interpret_experiment_directory(directory, exp_title="Experiment 2", display_plots=True, no_causal_plots=True)
 
-'''
-# Example usage
-'''
-# plot_exp_results(exp_number = 2, version = 1, num_reps=10, seed=1)
-# plot_exp_results(exp_number = 2, version = 2, num_reps=10, seed=1)
-# plot_exp_results(exp_number = 3, version = 1, num_reps=10, seed=1)
-# plot_exp_results(exp_number = 3, version = 2, num_reps=10, seed=1)
-# plot_exp_results(exp_number = 1, version = 1, num_reps=10)
-# plot_exp_results(exp_number='random', d=3, num_reps=10, seed=69)
-# plot_exp_results(exp_number='random', d=4, num_reps=10, seed=69)
-# plot_exp_results(exp_number='random', d=5, num_reps=10, seed=69)
-# plot_exp_results(exp_number='random', d=10, num_reps=10, seed=42)
-# plot_exp_results(exp_number='random', d=3, num_reps=1, seed=9)
-ds = [5]
-ps = [0.25]
-seeds = [69]
-# seeds = np.arange(3,19)
-for d in ds:
-    for p in ps:
-        for seed in seeds:
-            # directory_path = f'Results_experiment_causal_sufficiency_random_{d}_sparsity_{p}_seed-{seed}'
-            directory_path = f'Results_experiment_latent_confounder_random_{d}_sparsity_{p}_seed-69'
-            interpret_causal_experiment(directory_path, show_stats=True, display_plot=True, latent=True, edge_threshold=0.5,
-                                       v_eps=0.5)
+    # directory = 'Results_experiment_3_seed-611'
+    # interpret_experiment_directory(directory, exp_title="Experiment 3", display_plots=True, no_causal_plots=True)
+    # directory = 'Results_experiment_3_seed-840'
+    # interpret_experiment_directory(directory, exp_title="Experiment 3", display_plots=True, no_causal_plots=True)
+    # directory = 'Results_experiment_random_3_seed-69'
+    # interpret_experiment_directory(directory,
+    #                                exp_title="Random Experiment d=3",
+    #                                display_plots=True, v_eps=1, edge_threshold=0.5)
+
+# directory = "Results_experiment_causal_sufficiency_random_3_sparsity_0.1_seed-7"
+    # interpret_experiment_directory(directory, exp_title="Random Experiment (d=3, p=0.1)", display_plots=True)
