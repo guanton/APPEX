@@ -15,7 +15,7 @@ def default_measurement_settings(exp_number, N=None):
     T = 1
     if N is None:
         N = 500
-    max_its = 30
+    max_its = 10
     if exp_number == 1:
         linearization = False
     else:
@@ -32,7 +32,7 @@ def default_measurement_settings(exp_number, N=None):
     return dt, dt_EM, T, N, max_its, linearization, killed, log_sinkhorn, report_time_splits
 
 
-def run_experiment_1(version=1, N=None, score_metric='w2'):
+def run_experiment_1(version=1, N=None, metrics_to_check=['nll', 'w2', 'w1', 'mmd']):
     '''
     Run experiment 1.
     '''
@@ -43,10 +43,10 @@ def run_experiment_1(version=1, N=None, score_metric='w2'):
     else:
         A = np.array([[-10]])
         G = math.sqrt(10) * np.eye(d)
-    return run_generic_experiment(A, G, d, N, verbose=True, exp_number=1, score_metric=score_metric)
+    return run_generic_experiment(A, G, d, N, verbose=True, exp_number=1, metrics_to_check=metrics_to_check)
 
 
-def run_experiment_2(version=1, N=500, score_metric='w2'):
+def run_experiment_2(version=1, N=500, metrics_to_check=['nll', 'w2', 'w1', 'mmd']):
     '''
     Run experiment 2.
     '''
@@ -56,10 +56,10 @@ def run_experiment_2(version=1, N=500, score_metric='w2'):
     else:
         A = np.array([[0, 1], [-1, 0]])
     G = np.eye(d)
-    return run_generic_experiment(A, G, d, N, verbose=True, exp_number=2, score_metric=score_metric)
+    return run_generic_experiment(A, G, d, N, verbose=True, exp_number=2, metrics_to_check=metrics_to_check)
 
 
-def run_experiment_3(version=1, N=500, score_metric='w2'):
+def run_experiment_3(version=1, N=500, metrics_to_check=['nll', 'w2', 'w1', 'mmd']):
     '''
     Run experiment 3.
     '''
@@ -69,10 +69,10 @@ def run_experiment_3(version=1, N=500, score_metric='w2'):
     else:
         A = np.array([[1 / 3, 4 / 3], [2 / 3, -1 / 3]])
     G = np.array([[1, 2], [-1, -2]])
-    return run_generic_experiment(A, G, d, N, verbose=True, exp_number=3, score_metric=score_metric)
+    return run_generic_experiment(A, G, d, N, verbose=True, exp_number=3, metrics_to_check=metrics_to_check)
 
 
-def run_experiment_random(d, N=None, causal_sufficiency=True, causal_experiment=True, p=0.5, score_metric='w2'):
+def run_experiment_random(d, N=None, causal_sufficiency=True, causal_experiment=True, p=0.5, metrics_to_check=['nll', 'w2', 'w1', 'mmd']):
     '''
     Run higher-dimensional random experiments.
     '''
@@ -84,17 +84,15 @@ def run_experiment_random(d, N=None, causal_sufficiency=True, causal_experiment=
         A = generate_random_matrix_with_eigenvalue_constraint(d, eigenvalue_threshold=1, sparsity_threshold=1,
                                                               epsilon=0)
         G = np.random.uniform(low=-1, high=1, size=(d, d))
-    return run_generic_experiment(A, G, d, N, exp_number='random', verbose=True, score_metric=score_metric)
+    return run_generic_experiment(A, G, d, N, exp_number='random', verbose=True, metrics_to_check=metrics_to_check)
 
 
 def run_generic_experiment(A, G, d, N=None, verbose=False, gaussian_start=False, exp_number='random',
-                           score_metric='w2'):
+                           metrics_to_check=['nll', 'w2', 'w1', 'mmd']):
     """
     Run an experiment with specified drift (A) and diffusion (G) matrices.
 
-    This version computes three convergence metrics (nll, w2, w1) at every iteration.
-    Since APPEX_iteration returns only (A_OT, H_OT, current_score), we re-run
-    the trajectory inference step (AEOT_trajectory_inference) to obtain X_OT for metric computation.
+    This version computes the convergence metrics (nll, w2, w1, mmd) at every iteration.
     """
     # Compute true observational diffusion matrix
     H = np.matmul(G, G.T)
@@ -115,47 +113,20 @@ def run_generic_experiment(A, G, d, N=None, verbose=False, gaussian_start=False,
     X_measured = linear_additive_noise_data(N, d=d, T=T, dt_EM=dt_EM, dt=dt, A=A, G=G, X0_dist=X0_dist,
                                             destroyed_samples=killed)
 
-    # --- Initial iteration ---
-    # Call APPEX_iteration (which returns 3 values: A_OT, H_OT, current_score)
-    A_OT, H_OT = APPEX_iteration(X_measured, dt, T, cur_est_A=None, cur_est_H=None,
-                                    linearization=linearization, report_time_splits=report_time_splits,
-                                    log_sinkhorn=log_sinkhorn)
-    # Recompute X_OT using current estimates (AEOT_trajectory_inference)
-    X_OT = AEOT_trajectory_inference(X_measured, dt, A_OT, H_OT, linearization=linearization,
-                                     report_time_splits=report_time_splits, log_sinkhorn=log_sinkhorn)
-    score_nll = compute_nll(X_OT, A_OT, H_OT, dt)
-    score_w2 = compute_w2(X_OT, A_OT, H_OT, dt)
-    score_w1 = compute_w1(X_OT, A_OT, H_OT, dt)
-    score_mmd = compute_mmd(X_OT, A_OT, H_OT, dt)
-    score_dict = {'nll': score_nll, 'w2': score_w2, 'w1': score_w1, 'mmd': score_mmd}
-    if verbose:
-        print(f"Iteration 1 metrics: nll = {score_nll:.4f}, w2 = {score_w2:.4f}, w1 = {score_w1:.4f}, mmd = {score_mmd:.4f}")
-        print(f"Iteration 1 MAE A: {compute_mae(A_OT, A):.4f}, MAE H: {compute_mae(H_OT, H):.4f}")
+    # Run the iterative procedure via the new APPEX function.
+    est_A_list, est_H_list, convergence_score_list = APPEX(
+        X_measured, dt, T,
+        linearization=linearization,
+        report_time_splits=report_time_splits,
+        log_sinkhorn=log_sinkhorn,
+        max_its=max_its,
+        metrics_to_check=metrics_to_check,
+        verbose_rejection=verbose,
+        true_A=A, true_H=H)
 
-
-    est_A_list = [A_OT]
-    est_GGT_list = [H_OT]
-    convergence_score_list = [score_dict]
-
-    its = 1
-    while its < max_its:
-        A_OT, H_OT = APPEX_iteration(X_measured, dt, T, cur_est_A=A_OT, cur_est_H=H_OT,
-                                        linearization=linearization, report_time_splits=report_time_splits,
-                                        log_sinkhorn=log_sinkhorn)
-        X_OT = AEOT_trajectory_inference(X_measured, dt, A_OT, H_OT, linearization=linearization,
-                                         report_time_splits=report_time_splits, log_sinkhorn=log_sinkhorn)
-        score_nll = compute_nll(X_OT, A_OT, H_OT, dt)
-        score_w2 = compute_w2(X_OT, A_OT, H_OT, dt)
-        score_w1 = compute_w1(X_OT, A_OT, H_OT, dt)
-        score_mmd = compute_mmd(X_OT, A_OT, H_OT, dt)
-        score_dict = {'nll': score_nll, 'w2': score_w2, 'w1': score_w1, 'mmd': score_mmd}
-        est_A_list.append(A_OT)
-        est_GGT_list.append(H_OT)
-        convergence_score_list.append(score_dict)
-        its += 1
-        if verbose:
-            print(f"Iteration {its} metrics: nll = {score_nll:.4f}, w2 = {score_w2:.4f}, w1 = {score_w1:.4f}, mmd = {score_mmd:.4f}")
-        print(f"Iteration {its} MAE A: {compute_mae(A_OT, A):.4f}, MAE H: {compute_mae(H_OT, H):.4f}")
+    # Print MAE metrics for each accepted iteration.
+    for i, (est_A, est_H) in enumerate(zip(est_A_list, est_H_list), start=1):
+        print(f"Accepted Iteration {i}: MAE A: {compute_mae(est_A, A):.4f}, MAE H: {compute_mae(est_H, H):.4f}")
 
     results_data = {
         'true_A': A,
@@ -163,17 +134,17 @@ def run_generic_experiment(A, G, d, N=None, verbose=False, gaussian_start=False,
         'true_H': H,
         'X0 points': points if not gaussian_start else None,
         'est A values': est_A_list,
-        'est H values': est_GGT_list,
+        'est H values': est_H_list,
         'convergence scores': convergence_score_list,  # list of dicts with keys 'nll', 'w2', 'w1', 'mmd'
         'N': N,
-        'score_metric': score_metric
+        'metrics': metrics_to_check
     }
     return results_data
 
 
 # --- Replicate Running Function ---
 def run_generic_experiment_replicates(exp_number, num_replicates, N_list=None, version=1, d=None, p=0.5,
-                                      causal_sufficiency=False, causal_experiment=False, seed=None, score_metric='w2'):
+                                      causal_sufficiency=False, causal_experiment=False, seed=None, metrics_to_check=['nll', 'w2', 'w1', 'mmd']):
     if seed is not None:
         np.random.seed(seed)
     else:
@@ -189,19 +160,19 @@ def run_generic_experiment_replicates(exp_number, num_replicates, N_list=None, v
         for i in range(1, num_replicates + 1):
             print(f'\nRunning replicate {i} of experiment {exp_number} with d={d} and N={N}')
             if exp_number == 1:
-                results_data = run_experiment_1(version=version, N=N, score_metric=score_metric)
+                results_data = run_experiment_1(version=version, N=N, metrics_to_check=metrics_to_check)
             elif exp_number == 2:
-                results_data = run_experiment_2(version=version, N=N, score_metric=score_metric)
+                results_data = run_experiment_2(version=version, N=N, metrics_to_check=metrics_to_check)
             elif exp_number == 3:
-                results_data = run_experiment_3(version=version, N=N, score_metric=score_metric)
+                results_data = run_experiment_3(version=version, N=N, metrics_to_check=metrics_to_check)
             elif exp_number == 'random':
                 if causal_experiment:
                     if causal_sufficiency:
                         print('Causal discovery experiment with causal sufficiency')
                     else:
                         print('Causal discovery experiment with latent confounders')
-                results_data = run_experiment_random(d, N=N, p=p, causal_sufficiency=causal_sufficiency,
-                                                     causal_experiment=causal_experiment, score_metric=score_metric)
+                results_data = run_experiment_random(d, p=p, causal_sufficiency=causal_sufficiency,
+                                                     causal_experiment=causal_experiment, metrics_to_check=metrics_to_check)
             if exp_number != 'random':
                 results_dir = f'Results_experiment_{exp_number}_seed-{seed}'
                 filename = f'version-{version}_N-{N}_replicate-{i}.pkl'
@@ -234,12 +205,8 @@ def run_generic_experiment_replicates(exp_number, num_replicates, N_list=None, v
 #     run_generic_experiment_replicates(exp_number='random', d=d, num_replicates=10, seed=69)
 #
 # # Causal discovery experiments (causal sufficiency)
-ds_cd = [3, 5, 10]
-# ps = [0.1, 0.25, 0.5]
-# for d in ds_cd:
-#     for p in ps:
-#         run_generic_experiment_replicates(exp_number='random', d=d, num_replicates=10, p=p, causal_sufficiency=True,
-#                                           causal_experiment=True, seed = 7)
+ds_cd = [3]
+
 #
 #
 
@@ -248,4 +215,10 @@ ps_latent = [0.25]
 for d in ds_cd:
     for p in ps_latent:
         run_generic_experiment_replicates(exp_number='random', d=d, num_replicates=10, p=p, causal_sufficiency=False,
-                                          causal_experiment=True, seed=1)
+                                          causal_experiment=True, seed=0, metrics_to_check=['w2'])
+
+# ps = [0.1, 0.25, 0.5]
+# for d in ds_cd:
+#     for p in ps:
+#         run_generic_experiment_replicates(exp_number='random', d=d, num_replicates=10, p=p, causal_sufficiency=True,
+#                                           causal_experiment=True, seed=0, metrics_to_check=['nll', 'w2', 'w1', 'mmd'])

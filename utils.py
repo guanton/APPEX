@@ -1,6 +1,11 @@
 import numpy as np
 import os
 import re
+from scipy.optimize import linear_sum_assignment
+from scipy.spatial.distance import cdist
+import ot
+# For the sklearn option:
+from sklearn.metrics.pairwise import pairwise_kernels
 
 def angle_between(v1, v2):
     """
@@ -191,3 +196,248 @@ def compute_mae(estimated, ground_truth):
     """Compute Mean Absolute Percentage Error (MAE)"""
     mae = np.mean(np.abs((estimated - ground_truth)))
     return mae
+
+
+
+def compute_mmd(X_OT, A_OT, H_OT, dt, num_samples=1000, sigma=None, method='closed'):
+    """
+    Compute the Maximum Mean Discrepancy (MMD) between the empirical residual distribution
+    (computed at each time step) and the theoretical Gaussian distribution N(0, H_OT * dt).
+
+    The MMD is computed using a Gaussian kernel:
+         k(x,y) = exp(-||x-y||^2/(2*sigma^2))
+    where sigma is a bandwidth parameter (if not provided, it defaults to dt).
+    The function returns the maximum MMD value over all time steps.
+
+    Parameters:
+      X_OT: np.ndarray, shape (num_trajectories, num_steps, d)
+            Inferred trajectories.
+      A_OT: np.ndarray, shape (d, d)
+            Drift matrix.
+      H_OT: np.ndarray, shape (d, d)
+            Diffusion matrix.
+      dt: float
+            Time step size.
+      num_samples: int, maximum number of residual samples to use per time step.
+      sigma: float, kernel bandwidth; if None, defaults to dt.
+      method: str, one of {'closed', 'sklearn', 'keops'}.
+
+    Returns:
+      mmd: float, the maximum (supremum) MMD over all time steps.
+    """
+    if sigma is None:
+        sigma = dt  # default choice; can be tuned
+
+    num_trajectories, num_steps, d = X_OT.shape
+    mmd_list = []
+
+    # Define the three kernel-computation branches.
+    def mmd_closed(empirical_samples, theoretical_samples, sigma):
+        # Use cdist to compute squared Euclidean distances.
+        K_xx = np.exp(-cdist(empirical_samples, empirical_samples, metric='sqeuclidean') / (2 * sigma ** 2))
+        K_yy = np.exp(-cdist(theoretical_samples, theoretical_samples, metric='sqeuclidean') / (2 * sigma ** 2))
+        K_xy = np.exp(-cdist(empirical_samples, theoretical_samples, metric='sqeuclidean') / (2 * sigma ** 2))
+        m = empirical_samples.shape[0]
+        mmd_sq = ((np.sum(K_xx) - np.trace(K_xx)) / (m * (m - 1)) +
+                  (np.sum(K_yy) - np.trace(K_yy)) / (m * (m - 1)) -
+                  2 * np.mean(K_xy))
+        return np.sqrt(max(mmd_sq, 0))
+
+    def mmd_sklearn(empirical_samples, theoretical_samples, sigma):
+        # Use sklearn's pairwise_kernels with the RBF (Gaussian) kernel.
+        gamma = 1.0 / (2 * sigma ** 2)
+        K_xx = pairwise_kernels(empirical_samples, empirical_samples, metric='rbf', gamma=gamma)
+        K_yy = pairwise_kernels(theoretical_samples, theoretical_samples, metric='rbf', gamma=gamma)
+        K_xy = pairwise_kernels(empirical_samples, theoretical_samples, metric='rbf', gamma=gamma)
+        m = empirical_samples.shape[0]
+        mmd_sq = ((np.sum(K_xx) - np.trace(K_xx)) / (m * (m - 1)) +
+                  (np.sum(K_yy) - np.trace(K_yy)) / (m * (m - 1)) -
+                  2 * np.mean(K_xy))
+        return np.sqrt(max(mmd_sq, 0))
+
+    # Loop over time steps:
+    for t in range(num_steps - 1):
+        # Compute residuals for time step t:
+        residuals = X_OT[:, t + 1, :] - (X_OT[:, t, :] + (A_OT @ X_OT[:, t, :].T).T * dt)
+        N_total = residuals.shape[0]
+        n = min(num_samples, N_total)
+        idx = np.random.choice(N_total, n, replace=False)
+        empirical_samples = residuals[idx]  # shape (n, d)
+        theoretical_samples = np.random.multivariate_normal(np.zeros(d), H_OT * dt, size=n)
+
+        if method == 'closed':
+            mmd_val = mmd_closed(empirical_samples, theoretical_samples, sigma)
+        elif method == 'sklearn':
+            mmd_val = mmd_sklearn(empirical_samples, theoretical_samples, sigma)
+        else:
+            raise ValueError("Invalid method. Choose 'closed' or 'sklearn'.")
+        mmd_list.append(mmd_val)
+
+    # Return the maximum MMD value over all time steps.
+    return np.max(mmd_list)
+
+
+
+def compute_nll(X_OT, A_OT, H_OT, dt):
+    """
+    Compute the negative log-likelihood (NLL) of the inferred trajectories under the current model.
+    (Original code; retained for metric='nll')
+    """
+    num_trajectories, num_steps, d = X_OT.shape
+    total_nll = 0.0
+    H_dt = H_OT * dt
+    # Precompute inverse and determinant of H_dt
+    H_dt_inv = np.linalg.pinv(H_dt)
+    sign, logdet_H_dt = np.linalg.slogdet(H_dt)
+    const_term = 0.5 * (d * np.log(2 * np.pi) + logdet_H_dt)
+    for traj in X_OT:
+        nll = 0.0
+        for t in range(num_steps - 1):
+            X_t = traj[t]
+            X_tp1 = traj[t + 1]
+            # Using Euler-Maruyama: mu_t = X_t + A_OT @ X_t * dt
+            mu_t = X_t + A_OT @ X_t * dt
+            diff = X_tp1 - mu_t
+            exponent = 0.5 * diff.T @ H_dt_inv @ diff
+            nll += exponent + const_term
+        total_nll += nll
+    avg_nll = total_nll / num_trajectories
+    return avg_nll
+
+def compute_w2(X_OT, A_OT, H_OT, dt, num_samples=1000, pot=False):
+    """
+    Compute the per-time-step squared Wasserstein-2 distance.
+
+    For each time step, compute the residuals (using Euler–Maruyama)
+    and then compute the W2 distance between the empirical residual distribution
+    and the theoretical N(0, H_OT * dt) distribution.
+
+    Parameters:
+        X_OT: array-like, shape (num_trajectories, num_steps, d)
+              Inferred trajectories.
+        A_OT: array-like, shape (d, d)
+              Drift matrix.
+        H_OT: array-like, shape (d, d)
+              Diffusion matrix (used in covariance H_OT * dt).
+        dt: float
+              Time step.
+        num_samples: int, optional
+              Maximum number of residual samples to use per time step.
+        pot: bool, optional (default=False)
+              If False use POT's ot.emd2; otherwise, use linear_sum_assignment
+
+    Returns:
+        max_w2: float
+             The maximum squared W2 distance across time steps.
+    """
+    num_trajectories, num_steps, d = X_OT.shape
+    w2_list = []
+
+    for t in range(num_steps - 1):
+        # Compute residuals for time step t (Euler–Maruyama update).
+        residuals = X_OT[:, t + 1, :] - (X_OT[:, t, :] + (A_OT @ X_OT[:, t, :].T).T * dt)
+        N_total = residuals.shape[0]
+        n = min(num_samples, N_total)
+        idx = np.random.choice(N_total, n, replace=False)
+        empirical_samples = residuals[idx]
+
+        # Generate theoretical samples from N(0, H_OT * dt).
+        theoretical_samples = np.random.multivariate_normal(np.zeros(d), H_OT * dt, size=n)
+
+        # Compute cost matrix (squared Euclidean distances).
+        cost_matrix = cdist(empirical_samples, theoretical_samples, metric='sqeuclidean')
+
+        if pot:
+            # Use POT's optimal transport solver.
+            p = np.ones(n) / n
+            q = np.ones(n) / n
+            w2 = ot.emd2(p, q, cost_matrix)
+            # w2 = np.sqrt(W2_squared)
+        else:
+            # Use the Hungarian algorithm from linear_sum_assignment
+            row_ind, col_ind = linear_sum_assignment(cost_matrix)
+            w2 = np.mean(cost_matrix[row_ind, col_ind])
+            # w2 = np.sqrt(avg_squared_distance)
+
+        w2_list.append(w2)
+
+    return np.max(w2_list)
+
+
+def compute_w1(X_OT, A_OT, H_OT, dt, num_samples=1000, pot=False):
+    """
+    Compute the per-time-step Wasserstein-1 (Earth Mover's) distance.
+
+    For each time step, compute the residuals and then compute the W1 distance
+    between the empirical residual distribution and the theoretical N(0, H_OT * dt)
+    distribution.
+
+    Parameters:
+        X_OT: array-like, shape (num_trajectories, num_steps, d)
+              Inferred trajectories.
+        A_OT: array-like, shape (d, d)
+              Inferred drift matrix.
+        H_OT: array-like, shape (d, d)
+              Inferred diffusion matrix (used in covariance H_OT * dt).
+        dt: float
+              Time step.
+        num_samples: int, optional
+              Maximum number of residual samples to use per time step.
+        pot: bool, optional (default=False)
+              If False use use POT's ot.emd2; otherwise, use linear_sum_assignment
+
+    Returns:
+        max_w1: float
+             The maximum W1 distance across time steps.
+    """
+    num_trajectories, num_steps, d = X_OT.shape
+    w1_list = []
+
+    for t in range(num_steps - 1):
+        # Compute residuals for time step t.
+        residuals = X_OT[:, t + 1, :] - (X_OT[:, t, :] + (A_OT @ X_OT[:, t, :].T).T * dt)
+        N_total = residuals.shape[0]
+        n = min(num_samples, N_total)
+        idx = np.random.choice(N_total, n, replace=False)
+        empirical_samples = residuals[idx]
+
+        # Generate theoretical samples from N(0, H_OT * dt)
+        theoretical_samples = np.random.multivariate_normal(np.zeros(d), H_OT * dt, size=n)
+
+        # Compute cost matrix (Euclidean distances)
+        cost_matrix = cdist(empirical_samples, theoretical_samples, metric='euclidean')
+
+        if pot:
+            # Use POT's optimal transport solver
+            p = np.ones(n) / n
+            q = np.ones(n) / n
+            w1 = ot.emd2(p, q, cost_matrix)
+        else:
+            # Use the Hungarian algorithm from linear sum assignment
+            row_ind, col_ind = linear_sum_assignment(cost_matrix)
+            avg_distance = np.mean(cost_matrix[row_ind, col_ind])
+            w1 = avg_distance
+
+        w1_list.append(w1)
+
+    return np.max(w1_list)
+
+
+def compute_convergence_score(X_OT, A_OT, H_OT, dt, metric='nll'):
+    """
+    Compute a convergence score based on the chosen metric.
+
+    Parameters:
+        metric: one of 'nll' (negative log-likelihood), 'w1' (Wasserstein-1), or 'w2' (Wasserstein-2)
+    """
+    if metric == 'nll':
+        return compute_nll(X_OT, A_OT, H_OT, dt)
+    elif metric == 'w2':
+        # print('W2 difference in implementation:', compute_w2(X_OT, A_OT, H_OT, dt) - compute_w2_pot(X_OT, A_OT, H_OT, dt))
+        return compute_w2(X_OT, A_OT, H_OT, dt)
+    elif metric == 'w1':
+        return compute_w1(X_OT, A_OT, H_OT, dt)
+    elif metric == 'mmd':
+        return compute_mmd(X_OT, A_OT, H_OT, dt)
+    else:
+        raise ValueError("Invalid metric. Choose from 'nll', 'w1', 'w2', or 'mmd'.")

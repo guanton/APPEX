@@ -4,234 +4,118 @@ from scipy.linalg import expm, sqrtm
 from scipy.stats import multivariate_normal
 from utils import *
 from scipy.special import logsumexp
-from scipy.optimize import linear_sum_assignment
-from scipy.spatial.distance import cdist
-import ot
 
 
-def compute_mmd(X_OT, A_OT, H_OT, dt, num_samples=1000):
+def APPEX(X_measured, dt, T,
+          linearization, report_time_splits, log_sinkhorn,
+          max_its,
+          metrics_to_check=['nll', 'w2', 'w1', 'mmd'],
+          verbose_rejection=True,
+          true_A=None, true_H=None, eps=0.01):
     """
-    Compute the Maximum Mean Discrepancy (MMD) between the empirical residual distribution and
-    the theoretical Gaussian distribution N(0, H_OT * dt).
+    Runs APPEX iterations with rejection based on specified convergence metrics.
+    The first iteration is always accepted and counted.
 
     Parameters:
-        X_OT: array-like of shape (num_trajectories, num_steps, d)
-              Inferred trajectories.
-        A_OT: array-like of shape (d, d)
-              Drift matrix used for the prediction.
-        H_OT: array-like of shape (d, d)
-              Diffusion matrix (used to form the covariance H_OT * dt).
-        dt: float
-              Time step size.
-        num_samples: int, optional (default=1000)
-              Maximum number of residual samples to use.
+      X_measured          : The observed data.
+      dt, T               : Time discretization parameters.
+      linearization, report_time_splits, log_sinkhorn : Additional parameters required by the iteration functions.
+      max_its             : The maximum number of accepted iterations.
+      metrics_to_check    : List of metric keys to check for improvement (lower is better).
+      verbose_rejection   : If True, print detailed rejection information including candidate MAEs.
+      true_A, true_H      : Ground truth matrices (if provided, used to compute MAEs).
 
     Returns:
-        mmd: float
-             The computed MMD value.
+      accepted_A_list     : List of accepted A estimates (first iteration included).
+      accepted_H_list     : List of accepted H estimates.
+      accepted_scores     : List of score dictionaries corresponding to accepted iterations.
     """
+    # ---- First iteration (always accepted) ----
+    X_OT, A_OT, H_OT = APPEX_iteration(X_measured, dt, T,
+                                 cur_est_A=None, cur_est_H=None,
+                                 linearization=linearization,
+                                 report_time_splits=report_time_splits,
+                                 log_sinkhorn=log_sinkhorn)
+    current_score = {
+        'nll': compute_nll(X_OT, A_OT, H_OT, dt),
+        'w2': compute_w2(X_OT, A_OT, H_OT, dt),
+        'w1': compute_w1(X_OT, A_OT, H_OT, dt),
+        'mmd': compute_mmd(X_OT, A_OT, H_OT, dt)
+    }
 
-    num_trajectories, num_steps, d = X_OT.shape
-    residuals = []
-    # Compute residuals from the Euler–Maruyama step
-    for traj in X_OT:
-        for t in range(num_steps - 1):
-            mu_t = traj[t] + A_OT @ traj[t] * dt
-            residuals.append(traj[t + 1] - mu_t)
-    residuals = np.array(residuals)
+    accepted_A_list = [A_OT]
+    accepted_H_list = [H_OT]
+    accepted_scores = [current_score]
 
-    # Sample a subset of residuals if needed
-    N_total = residuals.shape[0]
-    n = min(num_samples, N_total)
-    idx = np.random.choice(N_total, n, replace=False)
-    empirical_samples = residuals[idx]
+    accepted_iterations = 1  # First iteration accepted.
+    attempt_count = 1  # Counts all attempts (accepted and rejected)
 
-    # Generate theoretical samples from N(0, H_OT*dt)
-    theoretical_samples = np.random.multivariate_normal(np.zeros(d), H_OT * dt, size=n)
+    # Print initial MAEs if ground truth provided.
+    if verbose_rejection and (true_A is not None and true_H is not None):
+        mae_A = compute_mae(A_OT, true_A)
+        mae_H = compute_mae(H_OT, true_H)
+        print(f"Iteration 1 accepted: MAE A: {mae_A:.4f}, MAE H: {mae_H:.4f}")
 
-    # Define Gaussian kernel function
-    def gaussian_kernel(X, Y, sigma):
-        dist_sq = cdist(X, Y, 'sqeuclidean')
-        return np.exp(-dist_sq / (2 * sigma ** 2))
+    # ---- Subsequent iterations with rejection rule ----
+    while accepted_iterations < max_its:
+        attempt_count += 1
 
-    # Compute kernel matrices using dt as the bandwidth (this choice may be tuned)
-    K_xx = gaussian_kernel(empirical_samples, empirical_samples, dt)
-    K_yy = gaussian_kernel(theoretical_samples, theoretical_samples, dt)
-    K_xy = gaussian_kernel(empirical_samples, theoretical_samples, dt)
+        # Generate candidate using APPEX_iteration
+        X_OT_candidate, candidate_A, candidate_H = APPEX_iteration(
+            X_measured, dt, T,
+            cur_est_A=accepted_A_list[-1],
+            cur_est_H=accepted_H_list[-1],
+            linearization=linearization,
+            report_time_splits=report_time_splits,
+            log_sinkhorn=log_sinkhorn)
 
-    # Unbiased estimates: exclude the diagonal elements for K_xx and K_yy
-    m = empirical_samples.shape[0]
-    n2 = theoretical_samples.shape[0]
-    mmd_sq = ((np.sum(K_xx) - np.trace(K_xx)) / (m * (m - 1))
-              + (np.sum(K_yy) - np.trace(K_yy)) / (n2 * (n2 - 1))
-              - 2 * np.mean(K_xy))
-    return np.sqrt(max(mmd_sq, 0))
+        candidate_score = {
+            'nll': compute_nll(X_OT_candidate, candidate_A, candidate_H, dt),
+            'w2': compute_w2(X_OT_candidate, candidate_A, candidate_H, dt),
+            'w1': compute_w1(X_OT_candidate, candidate_A, candidate_H, dt),
+            'mmd': compute_mmd(X_OT_candidate, candidate_A, candidate_H, dt)
+        }
 
-
-def compute_nll(X_OT, A_OT, H_OT, dt):
-    """
-    Compute the negative log-likelihood (NLL) of the inferred trajectories under the current model.
-    (Original code; retained for metric='nll')
-    """
-    num_trajectories, num_steps, d = X_OT.shape
-    total_nll = 0.0
-    H_dt = H_OT * dt
-    # Precompute inverse and determinant of H_dt
-    H_dt_inv = np.linalg.pinv(H_dt)
-    sign, logdet_H_dt = np.linalg.slogdet(H_dt)
-    const_term = 0.5 * (d * np.log(2 * np.pi) + logdet_H_dt)
-    for traj in X_OT:
-        nll = 0.0
-        for t in range(num_steps - 1):
-            X_t = traj[t]
-            X_tp1 = traj[t + 1]
-            # Using Euler-Maruyama: mu_t = X_t + A_OT @ X_t * dt
-            mu_t = X_t + A_OT @ X_t * dt
-            diff = X_tp1 - mu_t
-            exponent = 0.5 * diff.T @ H_dt_inv @ diff
-            nll += exponent + const_term
-        total_nll += nll
-    avg_nll = total_nll / num_trajectories
-    return avg_nll
-
-def compute_w2(X_OT, A_OT, H_OT, dt, num_samples=1000, pot=False):
-    """
-    Compute the per-time-step squared Wasserstein-2 distance.
-
-    For each time step, compute the residuals (using Euler–Maruyama)
-    and then compute the W2 distance between the empirical residual distribution
-    and the theoretical N(0, H_OT * dt) distribution.
-
-    Parameters:
-        X_OT: array-like, shape (num_trajectories, num_steps, d)
-              Inferred trajectories.
-        A_OT: array-like, shape (d, d)
-              Drift matrix.
-        H_OT: array-like, shape (d, d)
-              Diffusion matrix (used in covariance H_OT * dt).
-        dt: float
-              Time step.
-        num_samples: int, optional
-              Maximum number of residual samples to use per time step.
-        pot: bool, optional (default=False)
-              If False use POT's ot.emd2; otherwise, use linear_sum_assignment
-
-    Returns:
-        max_w2: float
-             The maximum squared W2 distance across time steps.
-    """
-    num_trajectories, num_steps, d = X_OT.shape
-    w2_list = []
-
-    for t in range(num_steps - 1):
-        # Compute residuals for time step t (Euler–Maruyama update).
-        residuals = X_OT[:, t + 1, :] - (X_OT[:, t, :] + (A_OT @ X_OT[:, t, :].T).T * dt)
-        N_total = residuals.shape[0]
-        n = min(num_samples, N_total)
-        idx = np.random.choice(N_total, n, replace=False)
-        empirical_samples = residuals[idx]
-
-        # Generate theoretical samples from N(0, H_OT * dt).
-        theoretical_samples = np.random.multivariate_normal(np.zeros(d), H_OT * dt, size=n)
-
-        # Compute cost matrix (squared Euclidean distances).
-        cost_matrix = cdist(empirical_samples, theoretical_samples, metric='sqeuclidean')
-
-        if pot:
-            # Use POT's optimal transport solver.
-            p = np.ones(n) / n
-            q = np.ones(n) / n
-            w2 = ot.emd2(p, q, cost_matrix)
-            # w2 = np.sqrt(W2_squared)
+        # If ground truth is provided, compute candidate MAEs.
+        if true_A is not None and true_H is not None:
+            candidate_mae_A = compute_mae(candidate_A, true_A)
+            candidate_mae_H = compute_mae(candidate_H, true_H)
         else:
-            # Use the Hungarian algorithm from linear_sum_assignment
-            row_ind, col_ind = linear_sum_assignment(cost_matrix)
-            w2 = np.mean(cost_matrix[row_ind, col_ind])
-            # w2 = np.sqrt(avg_squared_distance)
+            candidate_mae_A = candidate_mae_H = None
 
-        w2_list.append(w2)
+        # Check for improvement on specified metrics (lower is better).
+        reject = False
+        rejection_details = []
+        for metric in metrics_to_check:
+            if candidate_score[metric] > current_score[metric] + eps:
+                diff = candidate_score[metric] - current_score[metric]
+                reject = True
+                rejection_details.append(
+                    f"{metric.upper()} increased by {diff:.4f} (from {current_score[metric]:.4f} to {candidate_score[metric]:.4f})"
+                )
 
-    return np.max(w2_list)
+        if reject:
+            if verbose_rejection:
+                msg = f"Attempt {attempt_count}: Candidate rejected because: " + "; ".join(rejection_details)
+                if candidate_mae_A is not None and candidate_mae_H is not None:
+                    msg += f" | Candidate MAE A: {candidate_mae_A:.4f}, MAE H: {candidate_mae_H:.4f}"
+                print(msg)
+            # Do not accept this candidate; continue to the next attempt.
+            continue
 
+        # Accept candidate: update accepted estimates and scores.
+        accepted_iterations += 1
+        accepted_A_list.append(candidate_A)
+        accepted_H_list.append(candidate_H)
+        accepted_scores.append(candidate_score)
+        current_score = candidate_score
+        if verbose_rejection:
+            msg = f"Attempt {attempt_count}: Candidate accepted as iteration {accepted_iterations}."
+            if candidate_mae_A is not None and candidate_mae_H is not None:
+                msg += f" | MAE A: {candidate_mae_A:.4f}, MAE H: {candidate_mae_H:.4f}"
+            print(msg)
 
-def compute_w1(X_OT, A_OT, H_OT, dt, num_samples=1000, pot=False):
-    """
-    Compute the per-time-step Wasserstein-1 (Earth Mover's) distance.
-
-    For each time step, compute the residuals and then compute the W1 distance
-    between the empirical residual distribution and the theoretical N(0, H_OT * dt)
-    distribution.
-
-    Parameters:
-        X_OT: array-like, shape (num_trajectories, num_steps, d)
-              Inferred trajectories.
-        A_OT: array-like, shape (d, d)
-              Inferred drift matrix.
-        H_OT: array-like, shape (d, d)
-              Inferred diffusion matrix (used in covariance H_OT * dt).
-        dt: float
-              Time step.
-        num_samples: int, optional
-              Maximum number of residual samples to use per time step.
-        pot: bool, optional (default=False)
-              If False use use POT's ot.emd2; otherwise, use linear_sum_assignment
-
-    Returns:
-        max_w1: float
-             The maximum W1 distance across time steps.
-    """
-    num_trajectories, num_steps, d = X_OT.shape
-    w1_list = []
-
-    for t in range(num_steps - 1):
-        # Compute residuals for time step t.
-        residuals = X_OT[:, t + 1, :] - (X_OT[:, t, :] + (A_OT @ X_OT[:, t, :].T).T * dt)
-        N_total = residuals.shape[0]
-        n = min(num_samples, N_total)
-        idx = np.random.choice(N_total, n, replace=False)
-        empirical_samples = residuals[idx]
-
-        # Generate theoretical samples from N(0, H_OT * dt)
-        theoretical_samples = np.random.multivariate_normal(np.zeros(d), H_OT * dt, size=n)
-
-        # Compute cost matrix (Euclidean distances)
-        cost_matrix = cdist(empirical_samples, theoretical_samples, metric='euclidean')
-
-        if pot:
-            # Use POT's optimal transport solver
-            p = np.ones(n) / n
-            q = np.ones(n) / n
-            w1 = ot.emd2(p, q, cost_matrix)
-        else:
-            # Use the Hungarian algorithm from linear sum assignment
-            row_ind, col_ind = linear_sum_assignment(cost_matrix)
-            avg_distance = np.mean(cost_matrix[row_ind, col_ind])
-            w1 = avg_distance
-
-        w1_list.append(w1)
-
-    return np.max(w1_list)
-
-
-def compute_convergence_score(X_OT, A_OT, H_OT, dt, metric='nll'):
-    """
-    Compute a convergence score based on the chosen metric.
-
-    Parameters:
-        metric: one of 'nll' (negative log-likelihood), 'w1' (Wasserstein-1), or 'w2' (Wasserstein-2)
-    """
-    if metric == 'nll':
-        return compute_nll(X_OT, A_OT, H_OT, dt)
-    elif metric == 'w2':
-        # print('W2 difference in implementation:', compute_w2(X_OT, A_OT, H_OT, dt) - compute_w2_pot(X_OT, A_OT, H_OT, dt))
-        return compute_w2(X_OT, A_OT, H_OT, dt)
-    elif metric == 'w1':
-        return compute_w1(X_OT, A_OT, H_OT, dt)
-    elif metric == 'mmd':
-        return compute_mmd(X_OT, A_OT, H_OT, dt)
-    else:
-        raise ValueError("Invalid metric. Choose from 'nll', 'w1', 'w2', or 'mmd'.")
-
+    return accepted_A_list, accepted_H_list, accepted_scores
 
 def APPEX_iteration(X, dt, T=1, cur_est_A=None, cur_est_H=None, linearization=True,
                     report_time_splits=False, log_sinkhorn=False):
@@ -264,10 +148,11 @@ def APPEX_iteration(X, dt, T=1, cur_est_A=None, cur_est_H=None, linearization=Tr
         # only supported for dimension 1
         A_OT = estimate_A_exact_1d(X_OT, dt)
         H_OT = estimate_GGT_exact_1d(X_OT, T, est_A=A_OT)
-    return A_OT, H_OT
+    return X_OT, A_OT, H_OT
+
 
 def AEOT_trajectory_inference(X, dt, est_A, est_GGT, linearization=True, report_time_splits=False,
-                                         epsilon=1e-8, log_sinkhorn = False, N_sample_traj=1000):
+                              epsilon=1e-8, log_sinkhorn=False, N_sample_traj=1000):
     '''
     Leverages anisotropic entropic optimal transport to infer trajectories from marginal samples
     :param X: measured population snapshots
@@ -356,6 +241,7 @@ def AEOT_trajectory_inference(X, dt, est_A, est_GGT, linearization=True, report_
         print('Time creating trajectories', ot_traj_time)
     return X_OT
 
+
 def sinkhorn(a, b, K, maxiter=1000, stopThr=1e-9, epsilon=1e-2):
     '''
     Sinkhorn algorithm given Gibbs kernel K
@@ -383,6 +269,7 @@ def sinkhorn(a, b, K, maxiter=1000, stopThr=1e-9, epsilon=1e-2):
             break
 
     return tmp
+
 
 def sinkhorn_log(a, b, K, maxiter=500, stopThr=1e-9, epsilon=1e-5):
     '''
@@ -447,7 +334,6 @@ def estimate_A(X, dt, pinv=False):
             sum_xt_xt += np.outer(xt, xt)
         sum_Edxt_Ext += sum_dxt_xt / num_trajectories
         sum_Ext_ExtT += sum_xt_xt / num_trajectories
-
 
     if pinv:
         return np.matmul(sum_Edxt_Ext, np.linalg.pinv(sum_Ext_ExtT)) * (1 / dt)
@@ -557,5 +443,3 @@ def estimate_GGT_exact_1d(X, T, est_A=None):
     GGT /= T * num_trajectories
 
     return GGT
-
-

@@ -2,9 +2,11 @@ import matplotlib.gridspec as gridspec
 import imageio.v2 as imageio
 import numpy as np
 import matplotlib.pyplot as plt
+from utils import *
 from scipy.stats import multivariate_normal
 from data_generation import *
 from APPEX import AEOT_trajectory_inference
+from plot_trajectories import plot_trajectories
 
 # Parameters
 N = 500  # Number of trajectories
