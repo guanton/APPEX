@@ -191,22 +191,29 @@ def plot_correlation(iterations, A_corrs, H_corrs, min_indices, exp_title=None):
 
 
 def plot_normalized_convergence(results_data, exp_title=None):
-    """
-    Generate a single normalized convergence plot with available metrics together.
-    """
-    num_iterations = len(results_data['convergence scores'])
+    # Support both keys in case of naming variations.
+    conv_scores = results_data.get('convergence scores', results_data.get('convergence_scores', []))
+
+    # If there are no convergence scores, print a message and exit the function.
+    if not conv_scores:
+        return
+
+    num_iterations = len(conv_scores)
     iterations = np.arange(1, num_iterations + 1)
-    conv_scores = results_data['convergence scores']
     metric_colors = {'nll': 'red', 'w2': 'blue', 'w1': 'green', 'mmd': 'orange'}
 
     plt.figure(figsize=(10, 6))
     for metric in ['nll', 'w2', 'w1', 'mmd']:
-        # Only plot if every iteration has the metric
+        # Only plot if every iteration has the metric.
         if all(metric in score for score in conv_scores):
             metric_vals = np.array([score[metric] for score in conv_scores])
+            # Guard against the pathological case where metric_vals might still be empty.
+            if metric_vals.size == 0:
+                continue
             metric_min, metric_max = np.min(metric_vals), np.max(metric_vals)
+            # Normalize using the formula: normalized = (x - min) / (max - min)
             normalized_vals = (metric_vals - metric_min) / (
-                    metric_max - metric_min) if metric_max != metric_min else np.zeros_like(metric_vals)
+                        metric_max - metric_min) if metric_max != metric_min else np.zeros_like(metric_vals)
             min_index = int(np.argmin(metric_vals))
             plt.plot(iterations, normalized_vals, label=f'Normalized {metric.upper()}',
                      color=metric_colors[metric], marker='o')
@@ -344,6 +351,41 @@ def aggregate_selection_metrics(replicates, edge_threshold=0.5, v_threshold=1, v
 # ===============================
 # Causal Graph Plotting (2x3 Display)
 # ===============================
+def plot_three_causal_graphs(results_data, true_A, true_H, v_threshold=1, edge_threshold=0.5):
+    """
+    Display a 1 x 3 grid of causal graphs:
+      - True graph (from the ground truth matrices)
+      - WOT graph (based on the first iteration, iteration 0)
+      - APPEX graph (based on the last iteration)
+    """
+    # Retrieve estimated values from results_data.
+    est_A_vals = results_data['est A values']
+    est_H_vals = results_data['est H values']
+
+    # Construct graphs:
+    g_true = construct_causal_graph(true_A, true_H, v_threshold=v_threshold, edge_threshold=edge_threshold)
+    g_wot = construct_causal_graph(est_A_vals[0], est_H_vals[0], v_threshold=v_threshold, edge_threshold=edge_threshold)
+    g_appex = construct_causal_graph(est_A_vals[-1], est_H_vals[-1], v_threshold=v_threshold,
+                                     edge_threshold=edge_threshold)
+
+    # Compute layouts:
+    pos_true = compute_layout(g_true)
+    pos_wot = compute_layout(g_wot)
+    pos_appex = compute_layout(g_appex)
+
+    # Create subplots in a single row.
+    fig, axes = plt.subplots(1, 3, figsize=(24, 8))
+
+    # Plot each graph.
+    plot_single_graph(g_true, pos_true, "True Causal Graph", axes[0])
+    plot_single_graph(g_wot, pos_wot, "WOT-based Graph (Iteration 1)", axes[1])
+    plot_single_graph(g_appex, pos_appex, "APPEX-based Graph (Last Iteration)", axes[2])
+
+    plt.tight_layout()
+    plt.show()
+
+
+
 def plot_six_causal_graphs(results_data, true_A, true_H, v_threshold=1, edge_threshold=0.5):
     """
     Display a 2 x 3 grid of causal graphs.
@@ -440,7 +482,10 @@ def interpret_experiment_directory(directory, exp_title=None, display_plots=True
             plot_replicate_diagnostics(results_data, true_A, true_H,
                                        exp_title=f"{exp_title} - Replicate {rep}")
             if causal_plots:
-                plot_six_causal_graphs(results_data, true_A, true_H, v_threshold=v_eps, edge_threshold=edge_threshold)
+                if len(results_data['convergence scores'])>1:
+                    plot_six_causal_graphs(results_data, true_A, true_H, v_threshold=v_eps, edge_threshold=edge_threshold)
+                else:
+                    plot_three_causal_graphs(results_data, true_A, true_H, v_threshold=v_eps, edge_threshold=edge_threshold)
 
     # Aggregate and print overall metrics.
     agg_sel = aggregate_selection_metrics(replicates, edge_threshold=edge_threshold, v_threshold=v_eps)
@@ -573,6 +618,14 @@ def print_verbose_graphs_breakdown(replicates, edge_threshold=0.5, v_threshold=1
 # Main Section
 # ===============================
 if __name__ == '__main__':
+    directory = f"Results_experiment_3_seed-729"
+    for eps in [0.45]:
+        for v_eps in [0.9]:
+            interpret_experiment_directory(directory,
+                                           exp_title=f"Experiment 3 version 1",
+                                           display_plots=True, v_eps=v_eps,
+                                           edge_threshold=eps, causality_only=True, verbose_graph=True)
+
     # Example: causal sufficiency experiments
     # for d in [3]:
     #     for p in [0.1, 0.25]:
@@ -584,12 +637,12 @@ if __name__ == '__main__':
     #                                                display_plots=True, v_eps=v_eps,
     #                                                edge_threshold=eps, causality_only=True, verbose_graph=True)
 
-    for d in [3]:
-        directory = f"Results_experiment_latent_confounder_random_{d}_sparsity_0.25_seed-0"
-        for eps in [0.45]:
-            for v_eps in [0.9]:
-                # Call the interpretation function on the directory.
-                interpret_experiment_directory(directory,
-                                               exp_title=f"Latent Confounder Experiment (d={d}, p=0.25)",
-                                               display_plots=True, v_eps=v_eps, edge_threshold=eps,
-                                               causality_only=True, verbose_graph=True)
+    # for d in [3]:
+    #     directory = f"Results_experiment_latent_confounder_random_{d}_sparsity_0.25_seed-0"
+    #     for eps in [0.45]:
+    #         for v_eps in [0.9]:
+    #             # Call the interpretation function on the directory.
+    #             interpret_experiment_directory(directory,
+    #                                            exp_title=f"Latent Confounder Experiment (d={d}, p=0.25)",
+    #                                            display_plots=True, v_eps=v_eps, edge_threshold=eps,
+    #                                            causality_only=True, verbose_graph=True)

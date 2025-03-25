@@ -15,7 +15,7 @@ def default_measurement_settings(exp_number, N=None):
     T = 1
     if N is None:
         N = 500
-    max_its = 10
+    max_its = 30
     if exp_number == 1:
         linearization = False
     else:
@@ -25,7 +25,7 @@ def default_measurement_settings(exp_number, N=None):
     else:
         log_sinkhorn = True
     killed = False
-    report_time_splits = True
+    report_time_splits = False
     print(
         f"Experiment settings: \n dt: {dt}, \n dt_EM: {dt_EM}, \n T: {T}, \n N: {N}, \n max_its: {max_its}, "
         f"\n linearization: {linearization}, \n killed: {killed}, \n log Sinkhorn: {log_sinkhorn}")
@@ -88,7 +88,7 @@ def run_experiment_random(d, N=None, causal_sufficiency=True, causal_experiment=
 
 
 def run_generic_experiment(A, G, d, N=None, verbose=False, gaussian_start=False, exp_number='random',
-                           metrics_to_check=['nll', 'w2', 'w1', 'mmd']):
+                           metrics_to_check=['nll', 'w2', 'w1', 'mmd'], check_convergence=False):
     """
     Run an experiment with specified drift (A) and diffusion (G) matrices.
 
@@ -117,6 +117,7 @@ def run_generic_experiment(A, G, d, N=None, verbose=False, gaussian_start=False,
     est_A_list, est_H_list, convergence_score_list = APPEX(
         X_measured, dt, T,
         linearization=linearization,
+        check_convergence=check_convergence,
         report_time_splits=report_time_splits,
         log_sinkhorn=log_sinkhorn,
         max_its=max_its,
@@ -194,7 +195,7 @@ def run_generic_experiment_replicates(exp_number, num_replicates, N_list=None, v
 # # # First experiments based on previously non-identifiable SDEs
 # run_generic_experiment_replicates(exp_number=1, version=1, num_replicates=10, d=1)
 # run_generic_experiment_replicates(exp_number=2, version=1, num_replicates=10, d=2)
-# run_generic_experiment_replicates(exp_number=3, version=1, num_replicates=10, d=2)
+run_generic_experiment_replicates(exp_number=3, version=1, num_replicates=10, d=2)
 # run_generic_experiment_replicates(exp_number=1, version=2, num_replicates=10, d=1)
 # run_generic_experiment_replicates(exp_number=2, version=2, num_replicates=10, d=2)
 # run_generic_experiment_replicates(exp_number=3, version=2, num_replicates=10, d=2)
@@ -205,17 +206,17 @@ def run_generic_experiment_replicates(exp_number, num_replicates, N_list=None, v
 #     run_generic_experiment_replicates(exp_number='random', d=d, num_replicates=10, seed=69)
 #
 # # Causal discovery experiments (causal sufficiency)
-ds_cd = [3]
-
+# ds_cd = [3]
 #
+# #
+# #
 #
-
-# Causal discovery experiments (latent confounder)
-ps_latent = [0.25]
-for d in ds_cd:
-    for p in ps_latent:
-        run_generic_experiment_replicates(exp_number='random', d=d, num_replicates=10, p=p, causal_sufficiency=False,
-                                          causal_experiment=True, seed=0, metrics_to_check=['w2'])
+# # Causal discovery experiments (latent confounder)
+# ps_latent = [0.25]
+# for d in ds_cd:
+#     for p in ps_latent:
+#         run_generic_experiment_replicates(exp_number='random', d=d, num_replicates=10, p=p, causal_sufficiency=False,
+#                                           causal_experiment=True, seed=0, metrics_to_check=['w2'])
 
 # ps = [0.1, 0.25, 0.5]
 # for d in ds_cd:

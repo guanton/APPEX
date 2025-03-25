@@ -9,19 +9,20 @@ from scipy.special import logsumexp
 def APPEX(X_measured, dt, T,
           linearization, report_time_splits, log_sinkhorn,
           max_its,
-          metrics_to_check=['nll', 'w2', 'w1', 'mmd'],
-          verbose_rejection=True,
+          check_convergence = False,
+          metrics_to_check=[],
+          verbose_rejection=False,
           true_A=None, true_H=None, eps=0.01):
     """
-    Runs APPEX iterations with rejection based on specified convergence metrics.
-    The first iteration is always accepted and counted.
+    Runs max_its iterations of the APPEX algorithm
 
     Parameters:
       X_measured          : The observed data.
       dt, T               : Time discretization parameters.
       linearization, report_time_splits, log_sinkhorn : Additional parameters required by the iteration functions.
       max_its             : The maximum number of accepted iterations.
-      metrics_to_check    : List of metric keys to check for improvement (lower is better).
+      check_convergence    : If true, convergence check is performed.
+      metrics_to_check    : List of metric keys to check for improvement, options include 'nll', 'w2', 'w1', 'mmd'.
       verbose_rejection   : If True, print detailed rejection information including candidate MAEs.
       true_A, true_H      : Ground truth matrices (if provided, used to compute MAEs).
 
@@ -36,19 +37,22 @@ def APPEX(X_measured, dt, T,
                                  linearization=linearization,
                                  report_time_splits=report_time_splits,
                                  log_sinkhorn=log_sinkhorn)
-    current_score = {
-        'nll': compute_nll(X_OT, A_OT, H_OT, dt),
-        'w2': compute_w2(X_OT, A_OT, H_OT, dt),
-        'w1': compute_w1(X_OT, A_OT, H_OT, dt),
-        'mmd': compute_mmd(X_OT, A_OT, H_OT, dt)
-    }
-
+    if check_convergence:
+        current_score = {
+            'nll': compute_nll(X_OT, A_OT, H_OT, dt),
+            'w2': compute_w2(X_OT, A_OT, H_OT, dt),
+            'w1': compute_w1(X_OT, A_OT, H_OT, dt),
+            'mmd': compute_mmd(X_OT, A_OT, H_OT, dt)
+        }
+        attempt_count = 1  # Counts all attempts (accepted and rejected)
+        accepted_scores = [current_score]
+    else:
+        accepted_scores = []
+    accepted_iterations = 1  # First iteration accepted.
     accepted_A_list = [A_OT]
     accepted_H_list = [H_OT]
-    accepted_scores = [current_score]
 
-    accepted_iterations = 1  # First iteration accepted.
-    attempt_count = 1  # Counts all attempts (accepted and rejected)
+
 
     # Print initial MAEs if ground truth provided.
     if verbose_rejection and (true_A is not None and true_H is not None):
@@ -58,7 +62,7 @@ def APPEX(X_measured, dt, T,
 
     # ---- Subsequent iterations with rejection rule ----
     while accepted_iterations < max_its:
-        attempt_count += 1
+
 
         # Generate candidate using APPEX_iteration
         X_OT_candidate, candidate_A, candidate_H = APPEX_iteration(
@@ -69,12 +73,14 @@ def APPEX(X_measured, dt, T,
             report_time_splits=report_time_splits,
             log_sinkhorn=log_sinkhorn)
 
-        candidate_score = {
-            'nll': compute_nll(X_OT_candidate, candidate_A, candidate_H, dt),
-            'w2': compute_w2(X_OT_candidate, candidate_A, candidate_H, dt),
-            'w1': compute_w1(X_OT_candidate, candidate_A, candidate_H, dt),
-            'mmd': compute_mmd(X_OT_candidate, candidate_A, candidate_H, dt)
-        }
+        if check_convergence:
+            attempt_count += 1
+            candidate_score = {
+                'nll': compute_nll(X_OT_candidate, candidate_A, candidate_H, dt),
+                'w2': compute_w2(X_OT_candidate, candidate_A, candidate_H, dt),
+                'w1': compute_w1(X_OT_candidate, candidate_A, candidate_H, dt),
+                'mmd': compute_mmd(X_OT_candidate, candidate_A, candidate_H, dt)
+            }
 
         # If ground truth is provided, compute candidate MAEs.
         if true_A is not None and true_H is not None:
@@ -85,35 +91,37 @@ def APPEX(X_measured, dt, T,
 
         # Check for improvement on specified metrics (lower is better).
         reject = False
-        rejection_details = []
-        for metric in metrics_to_check:
-            if candidate_score[metric] > current_score[metric] + eps:
-                diff = candidate_score[metric] - current_score[metric]
-                reject = True
-                rejection_details.append(
-                    f"{metric.upper()} increased by {diff:.4f} (from {current_score[metric]:.4f} to {candidate_score[metric]:.4f})"
-                )
+        if check_convergence:
+            rejection_details = []
+            for metric in metrics_to_check:
+                if candidate_score[metric] > current_score[metric] + eps:
+                    diff = candidate_score[metric] - current_score[metric]
+                    reject = True
+                    rejection_details.append(
+                        f"{metric.upper()} increased by {diff:.4f} (from {current_score[metric]:.4f} to {candidate_score[metric]:.4f})"
+                    )
 
-        if reject:
-            if verbose_rejection:
-                msg = f"Attempt {attempt_count}: Candidate rejected because: " + "; ".join(rejection_details)
-                if candidate_mae_A is not None and candidate_mae_H is not None:
-                    msg += f" | Candidate MAE A: {candidate_mae_A:.4f}, MAE H: {candidate_mae_H:.4f}"
-                print(msg)
-            # Do not accept this candidate; continue to the next attempt.
-            continue
+            if reject:
+                if verbose_rejection:
+                    msg = f"Attempt {attempt_count}: Candidate rejected because: " + "; ".join(rejection_details)
+                    if candidate_mae_A is not None and candidate_mae_H is not None:
+                        msg += f" | Candidate MAE A: {candidate_mae_A:.4f}, MAE H: {candidate_mae_H:.4f}"
+                    print(msg)
+                # Do not accept this candidate; continue to the next attempt.
+                continue
 
         # Accept candidate: update accepted estimates and scores.
         accepted_iterations += 1
         accepted_A_list.append(candidate_A)
         accepted_H_list.append(candidate_H)
-        accepted_scores.append(candidate_score)
-        current_score = candidate_score
-        if verbose_rejection:
-            msg = f"Attempt {attempt_count}: Candidate accepted as iteration {accepted_iterations}."
-            if candidate_mae_A is not None and candidate_mae_H is not None:
-                msg += f" | MAE A: {candidate_mae_A:.4f}, MAE H: {candidate_mae_H:.4f}"
-            print(msg)
+        if check_convergence:
+            accepted_scores.append(candidate_score)
+            current_score = candidate_score
+            if verbose_rejection:
+                msg = f"Attempt {attempt_count}: Candidate accepted as iteration {accepted_iterations}."
+                if candidate_mae_A is not None and candidate_mae_H is not None:
+                    msg += f" | MAE A: {candidate_mae_A:.4f}, MAE H: {candidate_mae_H:.4f}"
+                print(msg)
 
     return accepted_A_list, accepted_H_list, accepted_scores
 
